@@ -1,0 +1,159 @@
+@import "tailwindcss";
+
+/* Enable class-based dark mode (v4 uses @custom-variant) so toggling .dark on
+ * the <html> root switches the dark: variants across all components. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+* {
+  box-sizing: border-box;
+}
+
+/* Full-height chain: html → body → #root → app root.
+ * Without this, any flex child using `h-full` or percentage heights collapses
+ * to its content box and pages like Studio end up with dead space below the
+ * sticky footer when the form's natural height is shorter than the viewport. */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background-color: #ffffff;
+  color: #0f172a;
+}
+
+html.dark body {
+  background-color: #0b1220;
+  color: #e2e8f0;
+}
+
+::selection {
+  background: rgba(34, 211, 238, 0.35);
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.animate-toast-in {
+  animation: toast-in 220ms cubic-bezier(0.21, 1, 0.32, 1);
+}
+
+/* ---------- Custom scrollbar ----------
+ * Theme-aware, subtle, native-feel. Applies globally including nested
+ * scrollers (inspector, filmstrip, history list, prompt log). Firefox
+ * uses `scrollbar-color`; WebKit/Blink uses `::-webkit-scrollbar-*`.
+ *
+ * Track stays transparent so it blends with any background color.
+ * Opt-out on elements that already hide their scrollbar (filmstrip uses
+ * `[&::-webkit-scrollbar]:hidden` + `[scrollbar-width:none]`).
+ */
+
+/* Firefox */
+* {
+  scrollbar-color: rgba(15, 23, 42, 0.22) transparent;
+  scrollbar-width: thin;
+}
+html.dark * {
+  scrollbar-color: rgba(226, 232, 240, 0.18) transparent;
+}
+
+/* WebKit / Blink */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background-color: rgba(15, 23, 42, 0.22);
+  border-radius: 999px;
+  /* Inset border creates the thin-pill look regardless of track color. */
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  transition: background-color 120ms ease;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(15, 23, 42, 0.38);
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:active {
+  background-color: rgba(15, 23, 42, 0.55);
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+html.dark *::-webkit-scrollbar-thumb {
+  background-color: rgba(226, 232, 240, 0.18);
+  background-clip: padding-box;
+}
+html.dark *::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(226, 232, 240, 0.32);
+  background-clip: padding-box;
+}
+html.dark *::-webkit-scrollbar-thumb:active {
+  background-color: rgba(226, 232, 240, 0.48);
+  background-clip: padding-box;
+}
+
+/* Showcase swiper and filmstrip intentionally hide scrollbars, but the global
+ * rule above would add width. Reinforce zero here. */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Skeleton shimmer sweep for the Studio loader. */
+@keyframes shimmer {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+/* Dashboard mobile sidebar drawer entrance. */
+@keyframes drawer-in {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(0); }
+}
+
+/* Dashboard detail modal animations. */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes modal-in {
+  from { opacity: 0; transform: translateY(12px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* ---------- Showcase marquee ----------
+ * Two lanes on the Landing showcase auto-scroll horizontally. One runs left,
+ * the other right, at slightly different speeds so the parallax never syncs.
+ * The track is duplicated in JSX (items + items), and we translate 50% to
+ * create a seamless infinite loop. Hovering pauses the lane so visitors can
+ * study a specific card. */
+
+@keyframes marquee-left {
+  from { transform: translate3d(0, 0, 0); }
+  to   { transform: translate3d(-50%, 0, 0); }
+}
+
+@keyframes marquee-right {
+  from { transform: translate3d(-50%, 0, 0); }
+  to   { transform: translate3d(0, 0, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [style*="marquee-left"],
+  [style*="marquee-right"] {
+    animation: none !important;
+  }
+}

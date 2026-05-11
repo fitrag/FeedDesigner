@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0f172a" />
+    <meta name="description" content="FeedDesigner AI: tool untuk membuat desain feed dan carousel Instagram berbasis AI dalam hitungan detik." />
+    <title>FeedDesigner AI</title>
+    <script>
+      // Apply theme before first paint to avoid light/dark flash.
+      (function () {
+        try {
+          var m = localStorage.getItem('feeddesigner:theme') || 'system';
+          var dark = m === 'dark' || (m === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          if (dark) document.documentElement.classList.add('dark');
+          document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+        } catch (_) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
