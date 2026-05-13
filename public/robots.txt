@@ -1,0 +1,11 @@
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /admin
+Disallow: /dashboard
+
+# Crawl-delay for polite bots
+Crawl-delay: 2
+
+# Sitemap (uncomment and set your domain when deployed)
+# Sitemap: https://yourdomain.com/sitemap.xml

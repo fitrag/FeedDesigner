@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
  * Count-up hook used by the loader and status bars. Resets whenever
  * `resetKey` changes — consumers pass `generatingSlide` so each slide
  * restarts at 0. Returns seconds as an integer for easy formatting.
+ * Uses a 1 s interval (not 250 ms) since we only display whole seconds.
  */
 export function useElapsedSeconds(running, resetKey) {
   const [elapsed, setElapsed] = useState(0)
@@ -13,7 +14,7 @@ export function useElapsedSeconds(running, resetKey) {
     const startedAt = Date.now()
     const id = setInterval(() => {
       setElapsed(Math.floor((Date.now() - startedAt) / 1000))
-    }, 250)
+    }, 1000)
     return () => clearInterval(id)
   }, [running, resetKey])
   return elapsed

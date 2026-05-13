@@ -7,6 +7,7 @@ import { Brand } from '../common.jsx'
 import { ThemeToggle } from '../theme.jsx'
 import { useAuth } from '../auth.jsx'
 import { formatRelative } from '../studio/utils.js'
+import { resolveApiUrl } from '../../config.js'
 
 /* ---------- format helpers ---------- */
 
@@ -264,7 +265,7 @@ const MODE_BADGE = {
 
 export const GenerationCard = memo(function GenerationCard({ item, onOpen, onDelete }) {
   const isCarousel = item.mode === 'carousel'
-  const cover = `/api/images/${item.id}-01.webp`
+  const cover = resolveApiUrl(`/api/images/${item.id}-01.webp`)
   return (
     <article className="group relative flex flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white transition hover:-translate-y-1 hover:border-slate-300 hover:shadow-[0_18px_40px_-20px_rgba(15,23,42,0.35)] dark:border-slate-800 dark:bg-slate-900 dark:hover:border-slate-700 dark:hover:shadow-[0_18px_40px_-20px_rgba(0,0,0,0.8)]">
       <button type="button" onClick={() => onOpen(item)} className="block text-left">
@@ -321,7 +322,7 @@ export const GenerationCard = memo(function GenerationCard({ item, onOpen, onDel
 
 export const GenerationRow = memo(function GenerationRow({ item, onOpen, onDelete }) {
   const isCarousel = item.mode === 'carousel'
-  const cover = `/api/images/${item.id}-01.webp`
+  const cover = resolveApiUrl(`/api/images/${item.id}-01.webp`)
   return (
     <div className="group flex items-center gap-3 rounded-xl border border-slate-200 bg-white p-2.5 transition hover:-translate-y-px hover:border-slate-300 hover:shadow-sm dark:border-slate-800 dark:bg-slate-900 dark:hover:border-slate-700">
       <button type="button" onClick={() => onOpen(item)} className="contents">

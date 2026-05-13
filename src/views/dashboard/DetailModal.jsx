@@ -7,6 +7,7 @@ import { authedFetch } from '../auth.jsx'
 import { useToast } from '../toast.jsx'
 import { buildDownloadName, toPngDownloadUrl } from '../studio/utils.js'
 import { formatAbs } from './shared.jsx'
+import { resolveApiUrl } from '../../config.js'
 
 /**
  * Generation detail modal.
@@ -32,7 +33,12 @@ export default function GenerationDetailModal({ id, onClose, onDeleted, onEdit }
     setLoading(true); setError(''); setActiveSlide(0); setData(null)
     authedFetch(`/api/generations/${id}`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('not_found'))))
-      .then((d) => { if (!aborted) { setData(d); setLoading(false) } })
+      .then((d) => {
+        if (aborted) return
+        // Resolve relative image URLs so they work in cross-origin deploys.
+        if (d?.slides) d.slides = d.slides.map((s) => ({ ...s, image: resolveApiUrl(s.image) }))
+        setData(d); setLoading(false)
+      })
       .catch(() => { if (!aborted) { setError('Gagal memuat detail'); setLoading(false) } })
     return () => { aborted = true }
   }, [id])

@@ -1,4 +1,3 @@
-import fs from 'node:fs'
 import 'dotenv/config'
 import express from 'express'
 import cors from 'cors'
@@ -7,15 +6,20 @@ import helmet from 'helmet'
 import rateLimit from 'express-rate-limit'
 import cookieParser from 'cookie-parser'
 import {
-  compressAndStoreImage, convertStoredImageToPng, createGenerationId, createSlideId, createUser, createUserId,
-  createUploadId, deleteGeneration, deleteUpload, getGeneration, getUpload, getUserByEmail, getUserStats,
-  imagesDir, isGenerationOwnedBy, listAuthEvents, listGenerations, listShowcaseSlides, logAuthEvent,
-  resolveImagePath, resolveUploadPath, saveGeneration, saveSlide, saveUploadedImage, setGenerationPublic,
+  compressAndStoreImage, convertStoredImageToPng, countUsers, countUserGenerations24h, createGenerationId,
+  createSlideId, createUser, createUserId, deleteGeneration, deleteUser,
+  getGeneration, getSetting, getUserByEmail, getUserStats, imagesDir, isGenerationOwnedBy,
+  listAllAuthEvents, listAllGenerations, listAllSettings, listAuthEvents, listGenerations,
+  listShowcaseSlides, listUsers, logAuthEvent, platformStats, processUploadedImage, resolveImagePath,
+  saveGeneration, saveSlide, setGenerationPublic, setSetting, setUserRole, userRole,
 } from './storage.js'
 import {
-  authMiddleware, clearAuthCookies, hashPassword, requireAuth, requireCsrfIfCookie,
+  authMiddleware, clearAuthCookies, hashPassword, requireAdmin, requireAuth, requireCsrfIfCookie,
   setAuthCookies, signToken, verifyPassword,
 } from './auth.js'
+import { fileURLToPath as _toPath } from 'node:url'
+import _nodePath from 'node:path'
+import _nodeFs from 'node:fs'
 
 const app = express()
 const PORT = process.env.PORT || 8787
@@ -30,7 +34,7 @@ if (process.env.TRUST_PROXY) {
 const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || 'https://r5d6xug.9router.com/v1'
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY
 const OPENAI_IMAGE_MODEL = process.env.OPENAI_IMAGE_MODEL || 'cx/gpt-5.4'
-const REQUEST_TIMEOUT_MS = Number(process.env.AI_REQUEST_TIMEOUT_MS) || 120_000
+const REQUEST_TIMEOUT_MS = Number(process.env.AI_REQUEST_TIMEOUT_MS) || 180_000
 
 // Pre-computed auth header so we are not rebuilding it on every request.
 const AUTH_HEADER = OPENAI_API_KEY ? { Authorization: `Bearer ${OPENAI_API_KEY}` } : null
@@ -63,6 +67,10 @@ function sanitizeBrief(body = {}) {
     captionTone:  clip(body.captionTone, FIELD_CAPS.captionTone).trim(),
     extraNotes:   clip(body.extraNotes, FIELD_CAPS.extraNotes).trim(),
     format:       clip(body.format, 40).trim(),
+    // Language used for on-canvas text. Trimmed & length-capped so a
+    // malicious value can't balloon the prompt or smuggle extra
+    // instructions — the prompt builders quote it as a single token.
+    language:     clip(body.language, 32).trim() || 'Indonesian',
     mode:         body.mode === 'carousel' ? 'carousel' : 'single',
     totalSlides:  Math.max(1, Math.min(10, Number(body.totalSlides) || 1)),
     slideIndex:   Math.max(1, Math.min(10, Number(body.slideIndex) || 1)),
@@ -75,7 +83,13 @@ function sanitizeBrief(body = {}) {
 // X-DNS-Prefetch-Control, X-Frame-Options, etc. We disable the CSP helper
 // because the SPA inlines styles + blob imagery + lazy chunks; instead we
 // set a focused CSP further down that fits this app's needs.
-app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }))
+app.use(helmet({
+  contentSecurityPolicy: false,
+  crossOriginEmbedderPolicy: false,
+  // Allow images/resources to be loaded cross-origin (needed when
+  // VITE_API_BASE_URL points to a different domain than the frontend).
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+}))
 
 // Lightweight CSP tailored for the SPA:
 // - script sources: self + unsafe-eval (Vite dev uses eval); drop unsafe-eval
@@ -103,7 +117,17 @@ app.use((_req, res, next) => {
 
 app.disable('x-powered-by')
 app.disable('etag')
-app.use(compression())
+// Compression — skip tiny payloads (<1 KB: not worth the CPU round-trip) and
+// let sharp-emitted WebP/PNG bytes pass through untouched since they are
+// already compressed.
+app.use(compression({
+  threshold: 1024,
+  filter: (req, res) => {
+    const type = res.getHeader('Content-Type') || ''
+    if (typeof type === 'string' && /^image\//i.test(type)) return false
+    return compression.filter(req, res)
+  },
+}))
 
 // CORS: allow a comma-separated list of origins via env. For cookie-based
 // auth we MUST reflect the request origin (wildcard doesn't work with
@@ -178,12 +202,108 @@ async function fetchWithTimeout(url, init = {}, timeoutMs = REQUEST_TIMEOUT_MS) 
   }
 }
 
+/**
+ * Fetch with automatic retry. Retries once on 5xx (upstream overloaded) with
+ * a short backoff. Does NOT retry on timeout — if the provider can't respond
+ * in REQUEST_TIMEOUT_MS, a second attempt is unlikely to help and would just
+ * double the user's wait time. The user can manually retry the failed slide.
+ */
+async function fetchWithRetry(url, init = {}, { timeoutMs = REQUEST_TIMEOUT_MS, retries = 1, backoffMs = 3000 } = {}) {
+  let lastError
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res = await fetchWithTimeout(url, init, timeoutMs)
+      // Retry on 5xx (upstream overloaded) but NOT on 4xx (client error).
+      if (res.status >= 500 && attempt < retries) {
+        await new Promise((r) => setTimeout(r, backoffMs * (attempt + 1)))
+        continue
+      }
+      return res
+    } catch (err) {
+      lastError = err
+      // Only retry on network errors (ECONNRESET, etc), NOT on timeout
+      // (AbortError) — retrying a timeout just doubles the wait.
+      if (err.name === 'AbortError') throw err
+      if (attempt < retries) {
+        await new Promise((r) => setTimeout(r, backoffMs * (attempt + 1)))
+        continue
+      }
+    }
+  }
+  throw lastError
+}
+
+// ---------- Tiny in-process caches ----------
+//
+// We use plain Maps with TTL for a handful of hot paths to avoid hammering
+// SQLite on every request. Keys are small, values are small, and the caches
+// are bounded by time — so there's no slow leak in long-running processes.
+
+/** Single-value cache with TTL. */
+function createTTLCache(ttlMs) {
+  let value, expires = 0
+  return {
+    get() { return Date.now() < expires ? value : undefined },
+    set(v) { value = v; expires = Date.now() + ttlMs },
+    invalidate() { expires = 0 },
+  }
+}
+
+/** Bounded LRU cache (insertion-order Map trick — delete then set on hit). */
+function createLRU(maxEntries, ttlMs) {
+  const map = new Map()
+  return {
+    get(key) {
+      const entry = map.get(key)
+      if (!entry) return undefined
+      if (Date.now() > entry.expires) { map.delete(key); return undefined }
+      // Refresh recency.
+      map.delete(key); map.set(key, entry)
+      return entry.value
+    },
+    set(key, value) {
+      if (map.has(key)) map.delete(key)
+      map.set(key, { value, expires: Date.now() + ttlMs })
+      if (map.size > maxEntries) {
+        // Delete the oldest (insertion-order) entry.
+        map.delete(map.keys().next().value)
+      }
+    },
+    delete(key) { map.delete(key) },
+  }
+}
+
+// Feature-flag cache: settings are read on nearly every request (by the
+// maintenance/registration middleware) but change rarely. A 5 s TTL keeps
+// admin toggles responsive while eliminating the repeated SELECT traffic.
+const SETTINGS_TTL_MS = 5000
+const settingsCache = new Map()
+function cachedSetting(key, fallback) {
+  const entry = settingsCache.get(key)
+  if (entry && Date.now() < entry.expires) return entry.value
+  const value = getSetting(key, fallback)
+  settingsCache.set(key, { value, expires: Date.now() + SETTINGS_TTL_MS })
+  return value
+}
+function invalidateSettingsCache() { settingsCache.clear() }
+
+// Showcase cache — landing page hits this on every visit. Generations opt
+// in/out rarely, so a 30 s TTL is a comfortable sweet spot.
+const showcaseCache = createTTLCache(30_000)
+const showcaseDetailCache = createLRU(64, 30_000)
+
+// Transcoded PNG cache. The /api/images/:file.png endpoint re-encodes on
+// every hit; caching keeps the second download of the same slide ~free.
+// 64 entries × <2 MB each = ~128 MB upper bound, which is fine for a
+// single-box deploy and gets reclaimed on restart.
+const pngCache = createLRU(64, 10 * 60 * 1000)
+
 // Read a stored upload from disk and return as a data URL, so we can pass it
 // inline to image-to-image endpoints without another fetch round-trip.
-async function readUploadAsDataUrl(fileName) {
-  const buf = await fs.promises.readFile(resolveUploadPath(fileName))
-  return `data:image/webp;base64,${buf.toString('base64')}`
-}
+// NOTE: legacy helper — user uploads are no longer persisted, they come in
+// inline on each generate call. Kept as a no-op safeguard in case a caller
+// still references it; the code path that used it was removed.
+
 
 app.get('/api/health', (_req, res) => {
   res.set('Cache-Control', 'no-store').json({
@@ -197,9 +317,26 @@ app.get('/api/health', (_req, res) => {
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
+// Comma-separated list of emails that should be promoted to admin role on
+// their first registration. Empty means no auto-promotion — you can still
+// flip a user to admin via the admin UI once any admin exists, or hand-edit
+// the SQLite row. Matching is case-insensitive.
+const ADMIN_EMAILS = new Set(
+  (process.env.ADMIN_EMAILS || '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean),
+)
+
 function publicUser(user) {
   if (!user) return null
-  return { id: user.id, email: user.email, name: user.name || null, createdAt: user.created_at }
+  return {
+    id: user.id,
+    email: user.email,
+    name: user.name || null,
+    role: user.role || 'user',
+    createdAt: user.created_at,
+  }
 }
 
 /** Pull minimal client metadata out of a request for audit logs. */
@@ -220,11 +357,16 @@ app.post('/api/auth/register', authLimiter, smallJson, async (req, res) => {
 
     const hashed = await hashPassword(String(password))
     const user = createUser({ id: createUserId(), email: cleanEmail, name: cleanName, password: hashed })
+    // Auto-promote to admin for seeded emails, or promote the very first user
+    // (bootstrap case so the instance always has an admin available).
+    const shouldPromote = ADMIN_EMAILS.has(cleanEmail) || countUsers() === 1
+    if (shouldPromote) {
+      setUserRole(user.id, 'admin')
+      user.role = 'admin'
+    }
     logAuthEvent({ userId: user.id, email: user.email, event: 'register', ...clientMeta(req) })
-    const token = signToken({ sub: user.id, email: user.email, name: user.name || undefined })
+    const token = signToken({ sub: user.id, email: user.email, name: user.name || undefined, role: user.role || 'user' })
     const csrf = setAuthCookies(res, token)
-    // `token` is still returned for legacy clients but new code should rely
-    // on the httpOnly cookie + csrf token instead.
     res.json({ token, csrf, user: publicUser(user) })
   } catch (error) {
     console.error('[register]', error); res.status(500).json({ error: 'Gagal membuat akun.' })
@@ -252,7 +394,7 @@ app.post('/api/auth/login', authLimiter, smallJson, async (req, res) => {
       return res.status(401).json({ error: 'Email atau password salah.' })
     }
     logAuthEvent({ userId: user.id, email: user.email, event: 'login_ok', ...clientMeta(req) })
-    const token = signToken({ sub: user.id, email: user.email, name: user.name || undefined })
+    const token = signToken({ sub: user.id, email: user.email, name: user.name || undefined, role: user.role || 'user' })
     const csrf = setAuthCookies(res, token)
     res.json({ token, csrf, user: publicUser(user) })
   } catch (error) {
@@ -285,12 +427,23 @@ app.get('/api/auth/events', requireAuth, (req, res) => {
 })
 
 app.get('/api/auth/me', requireAuth, (req, res) => {
-  // Transparent migration: when an old Bearer-authed client hits this route
-  // and no auth cookie is set yet, issue fresh cookies so subsequent
-  // requests use the XSS-resistant path. The server already validated the
-  // bearer token via authMiddleware.
+  // Re-read role from DB so role changes take effect without requiring
+  // the user to sign out and back in.
+  const currentRole = userRole(req.user.id)
+  req.user.role = currentRole
+
+  // Log session resume so the audit trail captures activity even when the
+  // user reconnects via an existing cookie (no login_ok event fires).
+  logAuthEvent({ userId: req.user.id, email: req.user.email, event: 'session_resume', ...clientMeta(req) })
+
+  // Only re-issue cookies when the auth cookie is missing (legacy bearer
+  // migration). If both cookies are present, leave them alone — rotating
+  // the CSRF token here causes race conditions where the client reads the
+  // old cookie value while the new one is still in-flight.
   if (!req.cookies?.fd_auth) {
-    const token = signToken({ sub: req.user.id, email: req.user.email, name: req.user.name })
+    const token = signToken({
+      sub: req.user.id, email: req.user.email, name: req.user.name, role: currentRole,
+    })
     const csrf = setAuthCookies(res, token)
     return res.json({ user: req.user, csrf })
   }
@@ -318,37 +471,21 @@ app.post('/api/uploads', requireAuth, uploadLimiter, uploadJson, async (req, res
     if (buffer.length === 0) return res.status(400).json({ error: 'Gambar kosong.' })
     if (buffer.length > MAX_UPLOAD_BYTES) return res.status(413).json({ error: 'Ukuran gambar maksimal 10 MB.' })
 
-    const record = await saveUploadedImage({
-      id: createUploadId(),
-      userId: req.user.id,
-      kind,
-      buffer,
-    })
+    // Process the image in memory: normalize orientation, cap size, compress
+    // to WebP. Nothing is written to disk or the database — the processed
+    // bytes are returned to the caller as a data URL so the browser can keep
+    // them in memory and ship them inline on the next generate call.
+    const record = await processUploadedImage({ buffer, kind })
     res.json(record)
   } catch (error) {
     console.error('[upload]', error); res.status(500).json({ error: 'Gagal mengupload gambar.' })
   }
 })
 
-app.get('/api/uploads/:fileName', (req, res) => {
-  const filePath = resolveUploadPath(req.params.fileName)
-  res.set('Cache-Control', 'public, max-age=31536000, immutable')
-  res.set('Content-Type', 'image/webp')
-  res.sendFile(filePath, (err) => {
-    if (err && !res.headersSent) res.status(404).json({ error: 'Upload not found' })
-  })
-})
-
-app.delete('/api/uploads/:id', requireAuth, (req, res) => {
-  const ok = deleteUpload(req.params.id, req.user.id)
-  if (!ok) return res.status(404).json({ error: 'Upload tidak ditemukan.' })
-  res.json({ ok: true })
-})
-
 app.post('/api/create-carousel-plan', requireAuth, generateLimiter, generateJson, async (req, res) => {
   try {
     const brief = sanitizeBrief(req.body)
-    const { topic, audience, brandName, colorPalette, format, captionTone, extraNotes } = brief
+    const { topic, audience, brandName, colorPalette, format, captionTone, extraNotes, language } = brief
     if (!topic) return res.status(400).json({ error: 'Topik wajib diisi.' })
 
     const total = Math.max(2, Math.min(Number(req.body?.totalSlides) || 3, 10))
@@ -363,7 +500,7 @@ app.post('/api/create-carousel-plan', requireAuth, generateLimiter, generateJson
             model: OPENAI_IMAGE_MODEL,
             messages: [
               { role: 'system', content: PLANNER_SYSTEM },
-              { role: 'user', content: buildPlannerPrompt({ topic, audience, total, brandName, colorPalette, format, captionTone, extraNotes }) },
+              { role: 'user', content: buildPlannerPrompt({ topic, audience, total, brandName, colorPalette, format, captionTone, extraNotes, language }) },
             ],
             temperature: 1.05,
           }),
@@ -392,10 +529,10 @@ app.post('/api/create-carousel-plan', requireAuth, generateLimiter, generateJson
 app.post('/api/generate-feed', requireAuth, generateLimiter, generateJson, async (req, res) => {
   try {
     const brief = sanitizeBrief(req.body)
-    const { brandName, topic, audience, colorPalette, format, captionTone, extraNotes, mode } = brief
+    const { brandName, topic, audience, colorPalette, format, captionTone, extraNotes, mode, language } = brief
     const {
       slideContent, carouselSlides, designBrief, generationId: clientGenerationId,
-      productUploadId, referenceUploadIds, logoUploadId,
+      productImage, referenceImages, logoImage,
     } = req.body
 
     if (!topic) return res.status(400).json({ error: 'Topik feed wajib diisi.' })
@@ -405,26 +542,38 @@ app.post('/api/generate-feed', requireAuth, generateLimiter, generateJson, async
     const total = brief.totalSlides
     const current = brief.slideIndex
 
-    // Resolve uploaded images from DB (client only sends IDs). Ownership is
-    // enforced: the uploaded image must belong to the caller (or be orphan).
-    const ownsUpload = (u) => !!u && (!u.user_id || u.user_id === req.user.id)
-    const productUpload = productUploadId ? getUpload(productUploadId) : null
-    if (productUpload && !ownsUpload(productUpload)) {
-      return res.status(403).json({ error: 'Akses upload ditolak.' })
-    }
-    const referenceIds = Array.isArray(referenceUploadIds) ? referenceUploadIds.slice(0, 4) : []
-    const referenceUploads = referenceIds
-      .map((id) => getUpload(id))
-      .filter((u) => ownsUpload(u))
-    const logoUpload = logoUploadId ? getUpload(logoUploadId) : null
-    if (logoUpload && !ownsUpload(logoUpload)) {
-      return res.status(403).json({ error: 'Akses upload ditolak.' })
-    }
+    // Resolve uploaded images from the request body. User images are NEVER
+    // persisted server-side — the client sends them inline as data URLs on
+    // every generate call, so the product/reference/logo images live only
+    // in this request's memory. We sanity-check each one and drop anything
+    // that doesn't match a basic data-URL shape to avoid forwarding junk
+    // upstream.
+    const isImageDataUrl = (v) => typeof v === 'string' && DATA_URL_RE.test(v)
+    const productUpload = isImageDataUrl(productImage) ? productImage : null
+    const referenceUploads = Array.isArray(referenceImages)
+      ? referenceImages.filter(isImageDataUrl).slice(0, 4)
+      : []
+    const logoUpload = isImageDataUrl(logoImage) ? logoImage : null
     const hasLogo = Boolean(logoUpload)
 
     // Generation record is created on slide 1, reused across subsequent slides.
     const generationId = clientGenerationId || createGenerationId()
     const isFirstSlide = current === 1
+
+    // Enforce the admin-configurable daily cap before we hit the upstream
+    // provider. Only count against the cap on slide 1 — subsequent slides of
+    // the same carousel share a generationId and shouldn't eat the budget.
+    const dailyLimit = Number(getSetting('generateDailyLimit', 0)) || 0
+    if (isFirstSlide && dailyLimit > 0 && req.user.role !== 'admin') {
+      const used = countUserGenerations24h(req.user.id)
+      if (used >= dailyLimit) {
+        return res.status(429).json({
+          error: `Limit generate harian tercapai (${dailyLimit}/hari). Coba lagi besok.`,
+          dailyLimit,
+          used,
+        })
+      }
+    }
 
     let prompt
     if (isCarousel) {
@@ -438,45 +587,51 @@ app.post('/api/generate-feed', requireAuth, generateLimiter, generateJson, async
         brandName, topic, audience, extraNotes, format,
         total, current, carouselPlan, slideBrief,
         designBrief: validateDesignBrief(designBrief),
-        hasLogo,
+        hasLogo, language,
       })
     } else {
       prompt = buildSinglePrompt({
         brandName, topic, audience, colorPalette, format,
         captionTone, extraNotes,
-        hasLogo,
+        hasLogo, language,
       })
     }
 
     const size = format === 'portrait 4:5' ? '1024x1280' : format === 'story 9:16' ? '1024x1792' : '1024x1024'
+
+    // Quality: 'auto' lets the provider pick the best trade-off between speed
+    // and fidelity. Override via AI_IMAGE_QUALITY env if you want to force
+    // 'high' (slower but sharper) or 'low' (fastest, good for drafts).
+    const imageQuality = process.env.AI_IMAGE_QUALITY || 'auto'
 
     const requestBody = {
       model: OPENAI_IMAGE_MODEL,
       prompt,
       n: 1,
       size,
-      quality: 'high',
+      quality: imageQuality,
       background: 'auto',
       output_format: 'png',
       response_format: 'b64_json',
     }
 
-    // If the user uploaded images, attach them to the request so providers
-    // that support image-to-image / reference conditioning can use them. Most
-    // OpenAI-compatible endpoints ignore unknown fields safely.
+    // Attach uploaded images inline to the upstream request. Sources are now
+    // plain data-URL strings — no disk read, no upload DB lookup. Providers
+    // that support image-to-image / reference conditioning will honour these;
+    // others silently ignore the extra fields.
     const attachedImages = []
-    if (productUpload) attachedImages.push(await readUploadAsDataUrl(productUpload.file_name))
-    if (logoUpload) attachedImages.push(await readUploadAsDataUrl(logoUpload.file_name))
-    for (const ref of referenceUploads) attachedImages.push(await readUploadAsDataUrl(ref.file_name))
+    if (productUpload) attachedImages.push(productUpload)
+    if (logoUpload) attachedImages.push(logoUpload)
+    for (const ref of referenceUploads) attachedImages.push(ref)
     if (attachedImages.length) {
       requestBody.image = attachedImages[0]
       if (attachedImages.length > 1) requestBody.reference_images = attachedImages.slice(1)
-      // Preserve identity of the uploaded product/reference/logo as faithfully
-      // as possible. Supported by image-edit endpoints: low | high | auto | original.
+      // Preserve identity of product/reference/logo as faithfully as possible.
+      // Supported by image-edit endpoints: low | high | auto | original.
       requestBody.input_fidelity = 'high'
     }
 
-    const response = await fetchWithTimeout(`${OPENAI_BASE_URL}/images/generations`, {
+    const response = await fetchWithRetry(`${OPENAI_BASE_URL}/images/generations`, {
       method: 'POST',
       headers: { ...AUTH_HEADER, 'Content-Type': 'application/json' },
       body: JSON.stringify(requestBody),
@@ -488,8 +643,12 @@ app.post('/api/generate-feed', requireAuth, generateLimiter, generateJson, async
       // Never echo the upstream response body back to the client — it can
       // leak provider-internal metadata. Just surface a human-readable
       // message and keep the original status code.
-      const message = data?.error?.message || data?.message || 'Gagal membuat gambar dari AI.'
-      return res.status(response.status).json({ error: String(message).slice(0, 500) })
+      const message = data?.error?.message || data?.message || (
+        response.status >= 500
+          ? `Provider AI sedang bermasalah (HTTP ${response.status}). Coba lagi nanti.`
+          : 'Gagal membuat gambar dari AI.'
+      )
+      return res.status(response.status >= 500 ? 502 : response.status).json({ error: String(message).slice(0, 500) })
     }
 
     const item = data?.data?.[0]
@@ -501,6 +660,10 @@ app.post('/api/generate-feed', requireAuth, generateLimiter, generateJson, async
     const pngBuffer = Buffer.from(item.b64_json, 'base64')
 
     if (isFirstSlide) {
+      // When the admin has flipped `showcasePublicDefault` on, newly created
+      // generations are public out of the box. Otherwise stays private and
+      // the user can opt-in from the dashboard.
+      const publicByDefault = getSetting('showcasePublicDefault', false) ? 1 : 0
       saveGeneration({
         id: generationId,
         user_id: req.user.id,
@@ -520,6 +683,11 @@ app.post('/api/generate-feed', requireAuth, generateLimiter, generateJson, async
         seed: null,
         brief_json: JSON.stringify(brief),
       })
+      if (publicByDefault) {
+        // Shortest path — set via the existing helper so the update takes the
+        // same row-ownership checks as the user-facing toggle.
+        setGenerationPublic(generationId, req.user.id, true)
+      }
     }
 
     const stored = await compressAndStoreImage({ generationId, slideIndex: current, pngBuffer })
@@ -552,7 +720,7 @@ app.post('/api/generate-feed', requireAuth, generateLimiter, generateJson, async
     })
   } catch (error) {
     if (error.name === 'AbortError') {
-      return res.status(504).json({ error: 'Request ke AI timeout. Coba lagi.' })
+      return res.status(504).json({ error: 'Request ke AI timeout. Slide ini bisa di-retry tanpa generate ulang seluruh carousel.' })
     }
     // Log the real error server-side for debugging, but return a generic
     // message to the client so we don't leak stack traces / paths / SQL bits.
@@ -563,7 +731,7 @@ app.post('/api/generate-feed', requireAuth, generateLimiter, generateJson, async
 
 // ---------- Prompt builders ----------
 
-const PLANNER_SYSTEM = 'Reply ONLY with valid JSON (no markdown fences, no commentary). All text rendered in the image must be in Indonesian.'
+const PLANNER_SYSTEM = 'Reply ONLY with valid JSON (no markdown fences, no commentary). Render all text in the image in the language specified by the user (field "language"). Default to Indonesian if unspecified.'
 
 /** Build a bullet list of user-provided brief fields, skipping empties. */
 function briefLines(entries) {
@@ -573,7 +741,8 @@ function briefLines(entries) {
     .join('\n')
 }
 
-function buildPlannerPrompt({ topic, audience, total, brandName, colorPalette, format, captionTone, extraNotes }) {
+function buildPlannerPrompt({ topic, audience, total, brandName, colorPalette, format, captionTone, extraNotes, language }) {
+  const lang = language || 'Indonesian'
   const lines = briefLines([
     ['Brand', brandName],
     ['Topic', topic],
@@ -583,42 +752,53 @@ function buildPlannerPrompt({ topic, audience, total, brandName, colorPalette, f
     ['Slides', total],
     ['Palette preference', colorPalette],
     ['Extra notes', extraNotes],
+    ['Output language', lang],
   ])
 
-  return `Plan an Instagram carousel. Brainstorm freely.
+  return `Plan an Instagram carousel. You have total creative freedom — any visual direction is fair game.
 
 USER BRIEF
 ${lines}
 
-Fill the designBrief so every slide can share the same look, then write ${total} slides in Indonesian.
+Task: fill the designBrief with concrete values, then write ${total} slides. All rendered text and copy use ${lang}.
 
-OUTPUT SCHEMA (strict JSON, no markdown):
+The designBrief is the single source of truth that ${total} per-slide prompts will reuse verbatim — so commit to exact values. Pick specific colors (real hex), specific typeface names, and a specific layout. The ${total} slides differ only in their focal content; everything else is identical.
+
+Rules for the series:
+- No slide number, page indicator, "1/${total}", or pagination dots rendered in the image (Instagram handles that natively).
+- The brand wordmark/logo position and typography are fixed once in the brief and reused on every slide (specify them in designBrief.layout and the designBrief.typography.brandWordmark* fields).
+
+OUTPUT SCHEMA (strict JSON, no markdown fences, no commentary):
 {
   "designBrief": {
-    "artStyle": "...",
-    "referenceImagery": "...",
-    "mood": "...",
+    "artStyle": "one sentence describing the overall visual treatment",
+    "referenceImagery": "one sentence describing the imagery shared across every slide",
+    "mood": "one word",
     "palette": { "background": "#RRGGBB", "text": "#RRGGBB", "accent": "#RRGGBB", "accentSoft": "#RRGGBB" },
     "typography": {
-      "headlineFont": "...",
-      "headlineWeight": "...",
+      "headlineFont": "concrete typeface name",
+      "headlineWeight": "numeric or keyword",
       "headlineCase": "uppercase|titlecase|sentencecase",
-      "subtextFont": "...",
-      "subtextWeight": "...",
-      "tracking": "...",
-      "feel": "..."
+      "subtextFont": "concrete typeface name",
+      "subtextWeight": "numeric or keyword",
+      "tracking": "letter-spacing phrase",
+      "feel": "short phrase",
+      "brandWordmarkFont": "concrete typeface name for the brand wordmark",
+      "brandWordmarkWeight": "numeric or keyword",
+      "brandWordmarkCase": "uppercase|titlecase|sentencecase",
+      "brandWordmarkTracking": "letter-spacing phrase"
     },
-    "layout": "...",
-    "graphicMotif": "..."
+    "layout": "one sentence locking the brand wordmark/logo position (corner, size, padding) — identical on every slide",
+    "graphicMotif": "one recurring element that appears on every slide"
   },
   "slides": [
     {
-      "role": "cover|problem|insight|solution|proof|conclusion",
-      "headline": "<=7 words, Indonesian",
-      "subtext": "<=18 words, Indonesian",
+      "role": "free-form short tag",
+      "headline": "<=7 words, in ${lang}",
+      "subtext": "<=18 words, in ${lang}",
       "bullets": ["<=5 words", "<=5 words"],
-      "visualNote": "imagery for this slide (English ok)",
-      "layout": "cover|split|checklist|quote|steps|conclusion"
+      "visualNote": "imagery for this slide (English ok, be concrete)",
+      "layout": "free-form short tag"
     }
   ]
 }`
@@ -627,8 +807,9 @@ OUTPUT SCHEMA (strict JSON, no markdown):
 function buildCarouselPrompt({
   brandName, topic, audience, extraNotes, format,
   total, current, carouselPlan, slideBrief, designBrief,
-  hasLogo,
+  hasLogo, language,
 }) {
+  const lang = language || 'Indonesian'
   const storyboard = carouselPlan
     .map((item) => `  ${item.index}/${total} [${item.role}] ${item.headline}`)
     .join('\n')
@@ -636,7 +817,7 @@ function buildCarouselPrompt({
 
   const briefJson = designBrief ? JSON.stringify(designBrief, null, 2) : ''
   const briefBlock = briefJson
-    ? `SERIES DESIGN BRIEF (shared across all slides):\n${briefJson}`
+    ? `SERIES DESIGN BRIEF (shared across all slides — apply verbatim):\n${briefJson}`
     : ''
 
   const contextLines = briefLines([
@@ -645,32 +826,48 @@ function buildCarouselPrompt({
     ['Audience', audience],
     ['Format', format],
     ['Extra notes', extraNotes],
+    ['Output language', lang],
   ])
 
   const brandRule = hasLogo
-    ? 'Use the uploaded logo image as the brand logo on this slide. Do NOT redraw or generate any other logo.'
+    ? 'Use the uploaded logo image as the brand logo. Do NOT redraw or generate any other logo.'
     : (brandName ? `Render the brand name "${brandName}" as plain text only — no logo, no monogram.` : '')
+
+  // Lock the brand wordmark typography to whatever the planner committed to,
+  // echoed verbatim so AI has no wiggle room between slides.
+  const bTypo = designBrief?.typography || {}
+  const brandTypoLock = (brandName && !hasLogo && bTypo.brandWordmarkFont)
+    ? `Render the brand wordmark "${brandName}" in EXACTLY "${bTypo.brandWordmarkFont}"${bTypo.brandWordmarkWeight ? `, weight ${bTypo.brandWordmarkWeight}` : ''}${bTypo.brandWordmarkCase ? `, case ${bTypo.brandWordmarkCase}` : ''}${bTypo.brandWordmarkTracking ? `, letter-spacing ${bTypo.brandWordmarkTracking}` : ''}. Must be visually identical to the wordmark on every other slide.`
+    : ''
+
+  const positionLock = (brandName || hasLogo)
+    ? (current === 1
+        ? 'Pick ONE corner for the brand wordmark/logo based on the designBrief.layout. Remember this position — subsequent slides must use it exactly.'
+        : `The brand wordmark/logo MUST be in the EXACT same corner, size, and padding as slide 1. Only the focal content changes.`)
+    : ''
 
   return `${briefBlock}
 
-This is slide ${current} of ${total}. Match the series design brief above so it feels like the same series as the other slides.
+This is slide ${current} of ${total} in the carousel above. Apply the shared design brief verbatim — palette, typography, layout, motif, overall density are all identical to sibling slides. Only the focal content changes.
 
-${contextLines ? `CONTEXT\n${contextLines}\n\n` : ''}STORYBOARD (context only)
+${contextLines ? `CONTEXT\n${contextLines}\n\n` : ''}STORYBOARD (context only — do NOT draw other slides)
 ${storyboard}
 
 THIS SLIDE (${current}/${total})
-- Headline (Indonesian): ${slideBrief.headline}
-- Subtext (Indonesian): ${slideBrief.subtext}
-${bullets ? `- Supporting points (Indonesian): ${bullets}\n` : ''}- Imagery: ${slideBrief.visualNote}
-${brandRule ? `- ${brandRule}\n` : ''}
-All rendered text is Indonesian.`
+- Headline (in ${lang}, render verbatim as the largest text): ${slideBrief.headline}
+- Subtext (in ${lang}, render verbatim): ${slideBrief.subtext}
+${bullets ? `- Supporting points (in ${lang}): ${bullets}\n` : ''}- Imagery: ${slideBrief.visualNote}
+- Do NOT render any slide number, page indicator, "1/${total}", pagination dots, or any visual cue that this is part of a carousel.
+${brandRule ? `- ${brandRule}\n` : ''}${positionLock ? `- ${positionLock}\n` : ''}${brandTypoLock ? `- ${brandTypoLock}\n` : ''}
+All rendered text on this slide is in ${lang}.`
 }
 
 function buildSinglePrompt({
   brandName, topic, audience, colorPalette, format,
   captionTone, extraNotes,
-  hasLogo,
+  hasLogo, language,
 }) {
+  const lang = language || 'Indonesian'
   const lines = briefLines([
     ['Brand', brandName],
     ['Topic', topic],
@@ -679,13 +876,14 @@ function buildSinglePrompt({
     ['Palette preference', colorPalette],
     ['Format', format],
     ['Extra notes', extraNotes],
+    ['Output language', lang],
   ])
 
   const brandRule = hasLogo
-    ? 'Use the uploaded logo image as the brand logo in the design. Do NOT redraw or generate any other logo.'
+    ? 'Use the uploaded logo image as the brand logo. Do NOT redraw or generate any other logo.'
     : (brandName ? `Render the brand name "${brandName}" as plain text only — no logo, no monogram.` : '')
 
-  return `Design ONE Instagram feed post. Brainstorm freely. All rendered text is Indonesian.
+  return `Design ONE Instagram feed post. You have total creative freedom on style, layout, composition, colors, typography, imagery, and any visual direction. All rendered text on the canvas is in ${lang}.
 
 USER BRIEF
 ${lines}${brandRule ? `\n- ${brandRule}` : ''}`
@@ -755,7 +953,14 @@ function validateDesignBrief(brief) {
       subtextFont: str(tp.subtextFont, 'Inter'),
       subtextWeight: str(tp.subtextWeight, 'regular'),
       tracking: str(tp.tracking, 'neutral 0'),
-      feel: str(tp.feel, 'modern clean'),
+      feel: str(tp.feel, 'neutral'),
+      // Dedicated brand wordmark typography so every slide can render the
+      // brand with identical face/weight/case. Falls back to the subtext
+      // face if the planner forgot to pick a distinct one.
+      brandWordmarkFont: str(tp.brandWordmarkFont, str(tp.subtextFont, 'Inter')),
+      brandWordmarkWeight: str(tp.brandWordmarkWeight, 'medium'),
+      brandWordmarkCase: ['uppercase', 'titlecase', 'sentencecase'].includes(tp.brandWordmarkCase) ? tp.brandWordmarkCase : 'uppercase',
+      brandWordmarkTracking: str(tp.brandWordmarkTracking, 'wide +8%'),
     }
   } else {
     typography = {
@@ -765,14 +970,18 @@ function validateDesignBrief(brief) {
       subtextFont: 'Inter',
       subtextWeight: 'regular',
       tracking: 'neutral 0',
-      feel: typeof tp === 'string' && tp.trim() ? tp.trim() : 'modern clean',
+      feel: typeof tp === 'string' && tp.trim() ? tp.trim() : 'neutral',
+      brandWordmarkFont: 'Inter',
+      brandWordmarkWeight: 'medium',
+      brandWordmarkCase: 'uppercase',
+      brandWordmarkTracking: 'wide +8%',
     }
   }
 
   return {
-    artStyle: str(brief.artStyle, 'modern editorial, clean and intentional'),
-    referenceImagery: str(brief.referenceImagery, 'consistent imagery treatment that matches the art style and backdrop on every slide'),
-    mood: str(brief.mood, 'premium'),
+    artStyle: str(brief.artStyle, 'shared across every slide'),
+    referenceImagery: str(brief.referenceImagery, 'consistent imagery shared across every slide'),
+    mood: str(brief.mood, 'neutral'),
     palette: {
       background: hex(pal.background, '#F7F5F0'),
       text: hex(pal.text, '#141414'),
@@ -780,8 +989,8 @@ function validateDesignBrief(brief) {
       accentSoft: hex(pal.accentSoft, '#DBEAFE'),
     },
     typography,
-    layout: str(brief.layout, 'headline centered with generous margins, slide number in the top-right corner, brand wordmark in the bottom-left footer'),
-    graphicMotif: str(brief.graphicMotif, 'a thin horizontal accent line near the headline'),
+    layout: str(brief.layout, 'brand wordmark in one fixed corner, identical size and padding across every slide'),
+    graphicMotif: str(brief.graphicMotif, 'none'),
   }
 }
 
@@ -830,11 +1039,18 @@ const DEFAULT_FRAMEWORK = Object.freeze({
 // to PNG only when users actually click download, so they get a format that
 // every downstream tool (Instagram, Canva, Figma, Photoshop) accepts natively.
 // Registered BEFORE the generic webp route so Express matches this first.
+// Results are LRU-cached so repeated downloads of the same slide are instant.
 app.get(/^\/api\/images\/(.+)\.png$/, async (req, res) => {
   try {
     const stem = req.params[0] // filename without extension
     const webpName = stem.endsWith('.webp') ? stem : `${stem}.webp`
-    const pngBuffer = await convertStoredImageToPng(webpName)
+
+    let pngBuffer = pngCache.get(webpName)
+    if (!pngBuffer) {
+      pngBuffer = await convertStoredImageToPng(webpName)
+      pngCache.set(webpName, pngBuffer)
+    }
+
     res.set('Cache-Control', 'public, max-age=31536000, immutable')
     res.set('Content-Type', 'image/png')
     res.set('Content-Length', pngBuffer.length)
@@ -889,50 +1105,60 @@ app.get('/api/stats', requireAuth, (req, res) => {
 })
 
 // Public showcase feed for the Landing page — returns one cover slide per
-// generation, newest first. Cached briefly so landing hits don't hammer the DB.
+// generation, newest first. Cached in-memory (30 s TTL) so landing hits
+// don't hammer the DB on every visitor.
 app.get('/api/showcase', (req, res) => {
-  const items = listShowcaseSlides(Number(req.query.limit) || 24).map((row) => ({
-    id: row.id,
-    generationId: row.generation_id,
-    image: `/api/images/${row.file_name}`,
-    mode: row.mode,
-    topic: row.topic,
-    brandName: row.brand_name,
-    format: row.format,
-    totalSlides: row.total_slides,
-    createdAt: row.created_at,
-  }))
+  const limit = Number(req.query.limit) || 24
+  let items = showcaseCache.get()
+  if (!items || items._limit !== limit) {
+    items = listShowcaseSlides(limit).map((row) => ({
+      id: row.id,
+      generationId: row.generation_id,
+      image: `/api/images/${row.file_name}`,
+      mode: row.mode,
+      topic: row.topic,
+      brandName: row.brand_name,
+      format: row.format,
+      totalSlides: row.total_slides,
+      createdAt: row.created_at,
+    }))
+    items._limit = limit
+    showcaseCache.set(items)
+  }
   res.set('Cache-Control', 'public, max-age=60')
   res.json({ items })
 })
 
 // Public showcase detail — returns a single generation with all its slides so
-// the landing-page modal can step through the full carousel without auth. We
-// intentionally do NOT expose the brief text / notes here, only the visuals
-// and minimal metadata, so it is safe as a public endpoint.
+// the landing-page modal can step through the full carousel without auth.
+// LRU-cached (30 s) to avoid repeated DB hits from the same visitor.
 app.get('/api/showcase/:generationId', (req, res) => {
-  const record = getGeneration(req.params.generationId)
-  if (!record) return res.status(404).json({ error: 'Not found' })
-  const { generation, slides } = record
-  // Only serve details for generations the owner explicitly published. This
-  // endpoint is public (no auth) so private briefs must never leak through it.
-  if (!generation.is_public) return res.status(404).json({ error: 'Not found' })
+  const gid = req.params.generationId
+  let payload = showcaseDetailCache.get(gid)
+  if (!payload) {
+    const record = getGeneration(gid)
+    if (!record) return res.status(404).json({ error: 'Not found' })
+    const { generation, slides } = record
+    if (!generation.is_public) return res.status(404).json({ error: 'Not found' })
+    payload = {
+      id: generation.id,
+      mode: generation.mode,
+      topic: generation.topic,
+      brandName: generation.brand_name,
+      format: generation.format,
+      totalSlides: generation.total_slides,
+      createdAt: generation.created_at,
+      slides: slides.map((s) => ({
+        index: s.slide_index,
+        image: `/api/images/${s.file_name}`,
+        role: s.role,
+        headline: s.headline,
+      })),
+    }
+    showcaseDetailCache.set(gid, payload)
+  }
   res.set('Cache-Control', 'public, max-age=60')
-  res.json({
-    id: generation.id,
-    mode: generation.mode,
-    topic: generation.topic,
-    brandName: generation.brand_name,
-    format: generation.format,
-    totalSlides: generation.total_slides,
-    createdAt: generation.created_at,
-    slides: slides.map((s) => ({
-      index: s.slide_index,
-      image: `/api/images/${s.file_name}`,
-      role: s.role,
-      headline: s.headline,
-    })),
-  })
+  res.json(payload)
 })
 
 app.get('/api/generations/:id', requireAuth, (req, res) => {
@@ -981,6 +1207,9 @@ app.patch('/api/generations/:id/visibility', requireAuth, smallJson, (req, res) 
   }
   const ok = setGenerationPublic(req.params.id, req.user.id, Boolean(req.body?.isPublic))
   if (!ok) return res.status(404).json({ error: 'Generation not found' })
+  // Invalidate showcase caches so the landing page reflects the change.
+  showcaseCache.invalidate()
+  showcaseDetailCache.delete(req.params.id)
   res.json({ ok: true, isPublic: Boolean(req.body?.isPublic) })
 })
 
@@ -993,7 +1222,275 @@ app.delete('/api/generations/:id', requireAuth, (req, res) => {
   res.json({ ok: true })
 })
 
+/* ---------- admin endpoints ---------- */
+
+/** Platform overview — high-level counters + recent activity summary. */
+app.get('/api/admin/overview', requireAuth, requireAdmin, (_req, res) => {
+  const s = platformStats()
+  res.set('Cache-Control', 'no-store').json({
+    users: s.users_count,
+    admins: s.admins_count,
+    generations: s.generations_count,
+    publicGenerations: s.public_count,
+    slides: s.slides_count,
+    bytesStored: s.bytes_stored,
+    loginFails24h: s.recent_login_fails,
+    lastGenerationAt: s.last_generation_at,
+  })
+})
+
+/** Paginated user list with per-user usage stats. */
+app.get('/api/admin/users', requireAuth, requireAdmin, (req, res) => {
+  const limit = Number(req.query.limit) || 50
+  const offset = Number(req.query.offset) || 0
+  const items = listUsers(limit, offset).map((u) => ({
+    id: u.id,
+    email: u.email,
+    name: u.name,
+    role: u.role,
+    createdAt: u.created_at,
+    generationCount: u.generation_count,
+    bytesStored: u.bytes_stored,
+  }))
+  res.json({ items, total: countUsers() })
+})
+
+/** Change a user's role. The admin cannot demote their own last-admin self. */
+app.patch('/api/admin/users/:id/role', requireAuth, requireAdmin, smallJson, (req, res) => {
+  const { id } = req.params
+  const nextRole = req.body?.role
+  if (nextRole !== 'admin' && nextRole !== 'user') {
+    return res.status(400).json({ error: 'Role harus "admin" atau "user".' })
+  }
+  if (id === req.user.id && nextRole === 'user') {
+    // Prevent self-lockout: refuse to demote when this is the only admin.
+    const s = platformStats()
+    if (s.admins_count <= 1) {
+      return res.status(400).json({ error: 'Tidak bisa mendemosi admin terakhir.' })
+    }
+  }
+  const ok = setUserRole(id, nextRole)
+  if (!ok) return res.status(404).json({ error: 'User tidak ditemukan.' })
+  res.json({ ok: true, id, role: nextRole })
+})
+
+/** Hard-delete a user account. Their generations/uploads stay (user_id
+ * becomes NULL) so we don't accidentally purge images that are public. */
+app.delete('/api/admin/users/:id', requireAuth, requireAdmin, (req, res) => {
+  if (req.params.id === req.user.id) {
+    return res.status(400).json({ error: 'Tidak bisa menghapus akun sendiri.' })
+  }
+  const ok = deleteUser(req.params.id)
+  if (!ok) return res.status(404).json({ error: 'User tidak ditemukan.' })
+  res.json({ ok: true })
+})
+
+/** Every generation across all users, paginated. */
+app.get('/api/admin/generations', requireAuth, requireAdmin, (req, res) => {
+  const limit = Number(req.query.limit) || 50
+  const offset = Number(req.query.offset) || 0
+  const items = listAllGenerations(limit, offset).map((g) => ({
+    id: g.id,
+    createdAt: g.created_at,
+    mode: g.mode,
+    topic: g.topic,
+    brandName: g.brand_name,
+    format: g.format,
+    totalSlides: g.total_slides,
+    slideCount: g.slide_count,
+    bytesStored: g.bytes_stored,
+    isPublic: Boolean(g.is_public),
+    user: g.user_id ? { id: g.user_id, email: g.user_email, name: g.user_name } : null,
+  }))
+  res.json({ items })
+})
+
+/** Admin override: force-delete any generation regardless of owner. */
+app.delete('/api/admin/generations/:id', requireAuth, requireAdmin, (req, res) => {
+  const ok = deleteGeneration(req.params.id)
+  if (!ok) return res.status(404).json({ error: 'Generation tidak ditemukan.' })
+  res.json({ ok: true })
+})
+
+/** Platform-wide auth audit log for incident investigation. */
+app.get('/api/admin/auth-events', requireAuth, requireAdmin, (req, res) => {
+  const limit = Number(req.query.limit) || 100
+  const offset = Number(req.query.offset) || 0
+  const events = listAllAuthEvents(limit, offset).map((row) => ({
+    id: row.id,
+    userId: row.user_id,
+    email: row.email,
+    userEmail: row.user_email, // may differ if email changed or account deleted
+    event: row.event,
+    ip: row.ip,
+    userAgent: row.user_agent,
+    createdAt: row.created_at,
+  }))
+  res.set('Cache-Control', 'no-store').json({ events })
+})
+
+/* ---------- settings (admin-editable feature flags) ----------
+ *
+ * Settings are exposed at two endpoints:
+ *  - GET /api/settings — public, returns only the subset of settings marked
+ *    as publicly readable so the SPA can gate features without exposing
+ *    sensitive ops flags.
+ *  - GET /api/admin/settings — admin-only, returns every setting with
+ *    metadata (when + by whom it was last updated).
+ */
+
+// Default feature flags + their visibility level. Edit this list whenever
+// you add a new setting.
+const SETTINGS_SCHEMA = {
+  registrationEnabled:   { default: true,  public: true  },
+  uploadsEnabled:        { default: true,  public: true  },
+  showcasePublicDefault: { default: false, public: true  },
+  generateDailyLimit:    { default: 0,     public: true  }, // 0 = no cap
+  maintenanceMode:       { default: false, public: true  },
+  maintenanceMessage:    { default: '',    public: true  },
+}
+
+function effectiveSettings(publicOnly = false) {
+  const out = {}
+  for (const [key, meta] of Object.entries(SETTINGS_SCHEMA)) {
+    if (publicOnly && !meta.public) continue
+    out[key] = getSetting(key, meta.default)
+  }
+  return out
+}
+
+// Enforce a few settings at request-time instead of inside every handler.
+// Placed after authMiddleware so req.user is populated; admins always bypass
+// maintenance mode + registration lockouts for recovery.
+// Uses cachedSetting() to avoid a DB round-trip on every single request.
+app.use((req, res, next) => {
+  const isAdmin = req.user?.role === 'admin'
+  if (!isAdmin && req.method === 'POST' && req.path === '/api/auth/register') {
+    if (!cachedSetting('registrationEnabled', true)) {
+      return res.status(403).json({ error: 'Pendaftaran sedang ditutup.' })
+    }
+  }
+  if (!isAdmin && req.path === '/api/uploads' && req.method === 'POST') {
+    if (!cachedSetting('uploadsEnabled', true)) {
+      return res.status(403).json({ error: 'Upload sedang dinonaktifkan.' })
+    }
+  }
+  if (!isAdmin && cachedSetting('maintenanceMode', false)) {
+    // Only block API routes during maintenance — SPA routes still need to
+    // serve index.html so the client can render the maintenance banner.
+    if (req.path.startsWith('/api/') && !req.path.startsWith('/api/auth/') && !req.path.startsWith('/api/health') && !req.path.startsWith('/api/settings')) {
+      return res.status(503).json({
+        error: cachedSetting('maintenanceMessage', '') || 'Maintenance mode aktif.',
+        maintenance: true,
+      })
+    }
+  }
+  next()
+})
+
+app.get('/api/settings', (_req, res) => {
+  res.set('Cache-Control', 'no-store').json({ settings: effectiveSettings(true) })
+})
+
+app.get('/api/admin/settings', requireAuth, requireAdmin, (_req, res) => {
+  const all = effectiveSettings(false)
+  const meta = listAllSettings().reduce((acc, row) => {
+    acc[row.key] = { updatedAt: row.updatedAt, updatedBy: row.updatedBy }
+    return acc
+  }, {})
+  res.set('Cache-Control', 'no-store').json({
+    settings: all,
+    schema: Object.fromEntries(
+      Object.entries(SETTINGS_SCHEMA).map(([k, v]) => [k, { default: v.default, public: v.public }]),
+    ),
+    meta,
+  })
+})
+
+app.patch('/api/admin/settings', requireAuth, requireAdmin, smallJson, (req, res) => {
+  const patch = req.body?.settings
+  if (!patch || typeof patch !== 'object') {
+    return res.status(400).json({ error: 'Body harus { settings: { key: value } }.' })
+  }
+  const updated = {}
+  for (const [key, value] of Object.entries(patch)) {
+    if (!(key in SETTINGS_SCHEMA)) continue
+    setSetting(key, value, req.user.id)
+    updated[key] = value
+  }
+  invalidateSettingsCache()
+  res.json({ ok: true, updated })
+})
+
+/* ---------- SPA static serving (production) ----------
+ *
+ * In production (`npm run build` then `npm run server`), serve the Vite-built
+ * dist/ folder. Any route that doesn't match an API endpoint or a physical
+ * file in dist/ falls through to index.html so client-side routing works.
+ * In dev mode Vite handles this via its own dev server + proxy.
+ */
+
+const __server_dirname = _nodePath.dirname(_toPath(import.meta.url))
+const DIST_DIR = _nodePath.resolve(__server_dirname, '..', 'dist')
+const DIST_INDEX = _nodePath.join(DIST_DIR, 'index.html')
+const HAS_DIST = _nodeFs.existsSync(DIST_INDEX)
+
+if (!HAS_DIST) {
+  console.warn(`[WARN] dist/index.html not found at: ${DIST_INDEX}`)
+  console.warn(`       __server_dirname = ${__server_dirname}`)
+  console.warn(`       cwd = ${process.cwd()}`)
+  console.warn('       Run "npm run build" in the project root to generate the production bundle.')
+  // Try cwd-based fallback (in case server is started from project root)
+  const cwdDist = _nodePath.resolve(process.cwd(), 'dist', 'index.html')
+  if (_nodeFs.existsSync(cwdDist)) {
+    console.log(`[INFO] Found dist at cwd: ${cwdDist}`)
+  }
+}
+
+// Use whichever dist path exists
+const RESOLVED_DIST = HAS_DIST
+  ? DIST_DIR
+  : _nodeFs.existsSync(_nodePath.resolve(process.cwd(), 'dist', 'index.html'))
+    ? _nodePath.resolve(process.cwd(), 'dist')
+    : null
+const RESOLVED_INDEX = RESOLVED_DIST ? _nodePath.join(RESOLVED_DIST, 'index.html') : null
+
+if (RESOLVED_DIST) {
+  // Serve built assets with long-term caching (hashed filenames).
+  app.use(express.static(RESOLVED_DIST, {
+    maxAge: '1y',
+    immutable: true,
+    index: false,
+    fallthrough: true,
+  }))
+
+  // SPA fallback: any GET/HEAD that didn't match an API route or a static
+  // file in dist/ gets index.html so the client-side router can handle it.
+  app.use((req, res, next) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return next()
+    if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'Not found' })
+    res.set('Content-Type', 'text/html')
+    res.set('Cache-Control', 'no-cache')
+    res.sendFile(RESOLVED_INDEX, (err) => {
+      if (err && !res.headersSent) {
+        console.error('[SPA fallback] sendFile error:', err.message)
+        res.status(500).send('Failed to serve app')
+      }
+    })
+  })
+} else {
+  // No dist found — add a catch-all that explains the situation
+  app.use((req, res, next) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return next()
+    if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'Not found' })
+    res.status(503).send('FeedDesigner: dist/ not found. Run "npm run build" first.')
+  })
+}
+
 app.listen(PORT, () => {
   console.log(`FeedDesigner API running on http://localhost:${PORT}`)
   console.log(`Images dir: ${imagesDir()}`)
+  if (RESOLVED_DIST) {
+    console.log(`Serving SPA from: ${RESOLVED_DIST}`)
+  }
 })

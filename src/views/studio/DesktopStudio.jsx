@@ -1,9 +1,8 @@
-import {
-  Clock, Copy, Download, FileText, History, Info, ImagePlus, Layers, Palette, RefreshCw,
+import { Clock, Copy, Download, FileText, History, Info, ImagePlus, Layers, Languages, Palette, RefreshCw,
   Rocket, Settings2, Sparkles, Square, StopCircle, Target, Type, Wand2,
 } from 'lucide-react'
 import { Kbd } from '../common.jsx'
-import { formats, modeOptions, slideCountOptions } from '../../models/feedDesignerModel.js'
+import { formats, languages, modeOptions, slideCountOptions } from '../../models/feedDesignerModel.js'
 import { Field, Section, Select, SegmentedControl, Textarea } from './primitives.jsx'
 import { Titlebar, Toolbar, StatusBar } from './chrome.jsx'
 import { Canvas, Filmstrip } from './canvas.jsx'
@@ -22,10 +21,10 @@ import { buildDownloadName, toPngDownloadUrl } from './utils.js'
  */
 export default function DesktopStudio({
   // form + results
-  form, images, activeSlide, prompt, loading, generatingSlide, error,
+  form, images, slideStatus, failedSlides, activeSlide, prompt, loading, generatingSlide, error,
   canGenerate, isCarousel, setActiveSlide,
   // actions
-  generate, reset, copyPrompt, pickTemplate, prevSlide, nextSlide,
+  generate, retrySlide, retryFailed, reset, copyPrompt, pickTemplate, prevSlide, nextSlide,
   // nav / chrome
   onBack, toggleFullscreen, isFullscreen, fileName, onOpenPalette,
   onOpenShortcuts,
@@ -40,7 +39,7 @@ export default function DesktopStudio({
   isAuthed, openLogin,
   // setters
   setMode, setFormat, setTotalSlides, setBrandName, setTopic, setColorPalette,
-  setAudience, setCaptionTone, setExtraNotes,
+  setAudience, setCaptionTone, setExtraNotes, setLanguage,
 }) {
   return (
     <>
@@ -104,6 +103,28 @@ export default function DesktopStudio({
               <Select label="Ukuran kanvas" value={form.format} onChange={setFormat} options={formats} />
             </Section>
 
+            <Section icon={Languages} title="Bahasa" collapsible id="desktop-language" defaultOpen={false}>
+              <label className="block">
+                <span className="mb-1.5 flex items-center justify-between text-[11px] font-medium uppercase tracking-[0.08em] text-slate-500 dark:text-slate-400">
+                  Bahasa hasil desain
+                </span>
+                <div className="relative">
+                  <select
+                    value={form.language || 'Indonesian'}
+                    onChange={(e) => setLanguage(e.target.value)}
+                    className="w-full appearance-none rounded-md border border-slate-200 bg-white px-3 py-2 pr-8 text-[13px] text-slate-900 outline-none transition focus:border-slate-900 focus:ring-2 focus:ring-slate-900/10 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-slate-100 dark:focus:ring-slate-100/10"
+                  >
+                    {languages.map((l) => (
+                      <option key={l.value} value={l.value}>{l.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <span className="mt-1 block text-[11px] leading-4 text-slate-500 dark:text-slate-400">
+                  Teks di dalam desain akan di-render dalam bahasa ini.
+                </span>
+              </label>
+            </Section>
+
             <Section icon={Settings2} title="Opsional" collapsible id="desktop-optional" defaultOpen={false}>
               <Field label="Target audiens" value={form.audience} onChange={setAudience} placeholder="mahasiswa, ibu muda, UMKM" optional />
               <Field label="Tone copy" value={form.captionTone} onChange={setCaptionTone} placeholder="friendly, profesional" optional />
@@ -150,6 +171,7 @@ export default function DesktopStudio({
           <div className="min-h-0 flex-1 overflow-hidden">
             <Canvas
               images={images}
+              slideStatus={slideStatus}
               activeSlide={activeSlide}
               loading={loading}
               isCarousel={isCarousel}
@@ -160,10 +182,13 @@ export default function DesktopStudio({
               onPickTemplate={pickTemplate}
               onPrev={prevSlide}
               onNext={nextSlide}
+              onRetrySlide={retrySlide}
             />
           </div>
           <Filmstrip
             images={images}
+            slideStatus={slideStatus}
+            failedSlides={failedSlides}
             activeSlide={activeSlide}
             setActiveSlide={setActiveSlide}
             totalSlides={form.totalSlides}
@@ -172,6 +197,8 @@ export default function DesktopStudio({
             generatingSlide={generatingSlide}
             topic={form.topic}
             brand={form.brandName}
+            onRetrySlide={retrySlide}
+            onRetryAllFailed={retryFailed}
           />
         </section>
 
@@ -219,8 +246,8 @@ export default function DesktopStudio({
                   <dl className="grid grid-cols-2 gap-y-2 text-[12px]">
                     <dt className="text-slate-500 dark:text-slate-400">Mode</dt><dd className="text-right font-medium text-slate-900 dark:text-slate-100">{isCarousel ? 'Carousel' : 'Single'}</dd>
                     <dt className="text-slate-500 dark:text-slate-400">Format</dt><dd className="text-right font-medium text-slate-900 dark:text-slate-100">{form.format}</dd>
-                    <dt className="text-slate-500 dark:text-slate-400">Progress</dt><dd className="text-right font-medium text-slate-900 dark:text-slate-100">{images.length}/{isCarousel ? form.totalSlides : 1}</dd>
-                    <dt className="text-slate-500 dark:text-slate-400">Slide aktif</dt><dd className="text-right font-medium text-slate-900 dark:text-slate-100">{images.length ? activeSlide + 1 : '—'}</dd>
+                    <dt className="text-slate-500 dark:text-slate-400">Progress</dt><dd className="text-right font-medium text-slate-900 dark:text-slate-100">{images.filter(Boolean).length}/{isCarousel ? form.totalSlides : 1}</dd>
+                    <dt className="text-slate-500 dark:text-slate-400">Slide aktif</dt><dd className="text-right font-medium text-slate-900 dark:text-slate-100">{images[activeSlide] ? activeSlide + 1 : '—'}</dd>
                   </dl>
                 </Section>
 
@@ -285,11 +312,14 @@ export default function DesktopStudio({
 
             {inspectorTab === 'export' && (
               <Section icon={Download} title="Download hasil">
-                {images.length === 0 ? (
+                {images.filter(Boolean).length === 0 ? (
                   <p className="py-4 text-[12px] text-slate-500 dark:text-slate-400">Belum ada hasil untuk di-export.</p>
                 ) : (
                   <div className="space-y-1.5">
                     {images.map((img, i) => {
+                      // Skip slots that failed or are still pending — only
+                      // render download links for slides we actually have.
+                      if (!img) return null
                       const fname = buildDownloadName({
                         topic: form.topic,
                         brand: form.brandName,
@@ -337,7 +367,7 @@ export default function DesktopStudio({
         loading={loading}
         isCarousel={isCarousel}
         totalSlides={form.totalSlides}
-        imagesCount={images.length}
+        imagesCount={images.filter(Boolean).length}
         format={form.format}
         error={error}
         generatingSlide={generatingSlide}

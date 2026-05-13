@@ -1,12 +1,12 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import {
   ChevronLeft, Clock, Copy, Cpu, FileText, History, Image as ImageIcon, ImagePlus,
-  Layers, MoreHorizontal, Palette, Pencil, RefreshCw, Settings2, Share2, Square,
+  Languages, Layers, MoreHorizontal, Palette, Pencil, RefreshCw, Settings2, Share2, Square,
   StopCircle, Target, Type, Wand2, X,
 } from 'lucide-react'
 import { ThemeToggle } from '../theme.jsx'
 import { UserMenu } from '../auth.jsx'
-import { formats, modeOptions, slideCountOptions } from '../../models/feedDesignerModel.js'
+import { formats, languages, modeOptions, slideCountOptions } from '../../models/feedDesignerModel.js'
 import { Field, Section, Select, SegmentedControl, Textarea } from './primitives.jsx'
 import { Canvas, Filmstrip } from './canvas.jsx'
 import { HistoryItem } from './inspector.jsx'
@@ -18,15 +18,15 @@ import { QUICK_TEMPLATES } from './constants.js'
  * Takes the same state props as desktop — it's a presentational component.
  */
 export default function MobileStudio({
-  form, images, activeSlide, prompt, loading, generatingSlide,
-  canGenerate, isCarousel, setActiveSlide, generate, reset, fileName,
+  form, images, slideStatus, failedSlides, activeSlide, prompt, loading, generatingSlide,
+  canGenerate, isCarousel, setActiveSlide, generate, retrySlide, retryFailed, reset, fileName,
   history, refreshHistory, loadHistory, deleteHistory, copyPrompt, pickTemplate,
   prevSlide, nextSlide, onBack,
   isAuthed, openLogin,
   productUpload, referenceUploads, logoUpload,
   setProductUpload, setReferenceUploads, setLogoUpload,
   setMode, setFormat, setTotalSlides, setBrandName, setTopic, setColorPalette,
-  setAudience, setCaptionTone, setExtraNotes,
+  setAudience, setCaptionTone, setExtraNotes, setLanguage,
 }) {
   const [tab, setTab] = useState('brief')
   const [sheetOpen, setSheetOpen] = useState(false)
@@ -113,6 +113,7 @@ export default function MobileStudio({
             setAudience={setAudience}
             setCaptionTone={setCaptionTone}
             setExtraNotes={setExtraNotes}
+            setLanguage={setLanguage}
           />
         )}
 
@@ -125,6 +126,7 @@ export default function MobileStudio({
             <div className="flex-1 min-h-0">
               <Canvas
                 images={images}
+                slideStatus={slideStatus}
                 activeSlide={activeSlide}
                 loading={loading}
                 isCarousel={isCarousel}
@@ -135,11 +137,14 @@ export default function MobileStudio({
                 onPickTemplate={pickTemplate}
                 onPrev={prevSlide}
                 onNext={nextSlide}
+                onRetrySlide={retrySlide}
               />
             </div>
             {(isCarousel || images.length > 0) && (
               <Filmstrip
                 images={images}
+                slideStatus={slideStatus}
+                failedSlides={failedSlides}
                 activeSlide={activeSlide}
                 setActiveSlide={setActiveSlide}
                 totalSlides={form.totalSlides}
@@ -148,6 +153,8 @@ export default function MobileStudio({
                 generatingSlide={generatingSlide}
                 topic={form.topic}
                 brand={form.brandName}
+                onRetrySlide={retrySlide}
+                onRetryAllFailed={retryFailed}
               />
             )}
           </div>
@@ -238,7 +245,7 @@ const BriefTab = memo(function BriefTab({
   productUpload, referenceUploads, logoUpload,
   setProductUpload, setReferenceUploads, setLogoUpload,
   setMode, setFormat, setTotalSlides, setBrandName, setTopic, setColorPalette,
-  setAudience, setCaptionTone, setExtraNotes,
+  setAudience, setCaptionTone, setExtraNotes, setLanguage,
 }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -294,6 +301,26 @@ const BriefTab = memo(function BriefTab({
             <Select label="Ukuran kanvas" value={form.format} onChange={setFormat} options={formats} />
           </Section>
         )}
+
+        <Section icon={Languages} title="Bahasa" collapsible id="mobile-language" defaultOpen={false}>
+          <label className="block">
+            <span className="mb-1.5 flex items-center justify-between text-[11px] font-medium uppercase tracking-[0.08em] text-slate-500 dark:text-slate-400">
+              Bahasa hasil desain
+            </span>
+            <select
+              value={form.language || 'Indonesian'}
+              onChange={(e) => setLanguage(e.target.value)}
+              className="w-full appearance-none rounded-md border border-slate-200 bg-white px-3 py-2 pr-8 text-[13px] text-slate-900 outline-none transition focus:border-slate-900 focus:ring-2 focus:ring-slate-900/10 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-slate-100 dark:focus:ring-slate-100/10"
+            >
+              {languages.map((l) => (
+                <option key={l.value} value={l.value}>{l.label}</option>
+              ))}
+            </select>
+            <span className="mt-1 block text-[11px] leading-4 text-slate-500 dark:text-slate-400">
+              Teks di dalam desain akan di-render dalam bahasa ini.
+            </span>
+          </label>
+        </Section>
 
         <Section icon={Settings2} title="Opsional" collapsible id="mobile-optional" defaultOpen={false}>
           <Field label="Target audiens" value={form.audience} onChange={setAudience} placeholder="mahasiswa, ibu muda, UMKM" optional />

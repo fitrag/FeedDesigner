@@ -9,6 +9,8 @@ import { Brand, Kbd } from './common.jsx'
 import { useToast } from './toast.jsx'
 import { ThemeToggle } from './theme.jsx'
 import { UserMenu, useAuth } from './auth.jsx'
+import { PwaInstallButton } from './pwa.jsx'
+import { API_BASE_URL, resolveApiUrl } from '../config.js'
 
 /* ---------- data ---------- */
 
@@ -21,131 +23,139 @@ const NAV = [
 ]
 
 const PAIN_POINTS = [
-  'Butuh berjam-jam buat 1 carousel di Canva.',
-  'Warna dan font antar slide nggak pernah benar-benar match.',
-  'Bingung nentuin copy, harus riset dulu, terus baru desain.',
-  'Bayar desainer lepas: mahal, lama, revisi lama juga.',
-  'AI generator lain hasilnya bagus 1 gambar, tapi carousel berantakan.',
+  'Habis 3-4 jam di Canva cuma buat 1 carousel, belum revisi.',
+  'Bayar desainer Rp 500K–3Jt per carousel, masih harus brief bolak-balik.',
+  'Warna, font, dan layout antar slide selalu beda — feed jadi berantakan.',
+  'AI generator lain cuma bisa 1 gambar, carousel-nya nggak nyambung.',
+  'Akhirnya jarang posting karena capek bikin konten visual.',
 ]
 
 const PROMISES = [
-  'Satu topik → carousel 10 slide dalam hitungan detik.',
-  'Palette, tipografi, dan layout terkunci dari slide 1 sampai akhir.',
-  'AI yang nulis copy Indonesia dan pilih arah visual sekaligus.',
-  'Unlimited generate di mesin kamu sendiri, tanpa biaya per-desain.',
-  'Dibangun khusus untuk carousel, bukan image generator umum.',
+  'Ketik 1 topik → carousel 10 slide jadi dalam 30 detik.',
+  'Palette, font, dan layout terkunci otomatis dari slide 1 sampai akhir.',
+  'AI nulis copy Bahasa Indonesia + pilih visual direction sekaligus.',
+  'Generate tanpa biaya per-desain — cukup bayar provider AI kamu.',
+  'Dibangun khusus untuk carousel, bukan image generator biasa.',
 ]
 
 const FEATURES = [
   {
     icon: Sparkles,
-    title: 'AI art director, bukan prompt generator',
-    desc: 'Sebelum render, AI menyusun design brief lengkap: art style, palette, typography, layout, motif. Brief itu lalu dipakai identik di tiap slide.',
+    title: 'AI art director pribadi kamu',
+    desc: 'Bukan cuma generate gambar. AI menyusun design brief lengkap — art style, palette hex, tipografi, layout — lalu eksekusi sendiri. Kamu tinggal approve.',
   },
   {
     icon: Layers,
-    title: 'Konsistensi carousel dijamin',
-    desc: 'Palette hex, tipografi, dan posisi elemen di-lock sekali. Slide 1 sampai 10 terasa satu seri—bukan gambar acak yang kebetulan mirip.',
+    title: 'Carousel yang benar-benar konsisten',
+    desc: 'Warna, font, posisi logo, dan motif visual di-lock sekali lalu dipakai identik di semua slide. Feed kamu terlihat profesional tanpa effort.',
   },
   {
     icon: MessageSquare,
-    title: 'Copy Bahasa Indonesia native',
-    desc: 'Headline dan subtext otomatis dalam Bahasa Indonesia yang terasa natural—bukan terjemahan kaku dari template Inggris.',
+    title: 'Copy Bahasa Indonesia yang natural',
+    desc: 'Headline, subtext, dan bullet point langsung dalam Bahasa Indonesia yang enak dibaca — bukan terjemahan kaku dari template Inggris.',
   },
   {
     icon: Zap,
-    title: 'Preview live per slide',
-    desc: 'Slide muncul satu-per-satu saat dirender. Tidak perlu menunggu semua selesai, bisa lanjut kerja sambil AI bekerja di belakang.',
+    title: '30 detik per carousel, bukan 3 jam',
+    desc: 'Slide muncul real-time saat dirender. Dalam waktu kurang dari 1 menit, carousel 10 slide sudah siap download dan posting.',
   },
   {
     icon: Shapes,
-    title: 'Bebas bereksplorasi style',
-    desc: 'Photography, 3D, illustration, collage, editorial—AI memilih yang paling cocok dengan topik kamu. Tidak dikurung ke satu template.',
+    title: 'Gaya visual tanpa batas',
+    desc: 'Photography, 3D render, flat illustration, editorial collage — AI memilih yang paling cocok dengan topik kamu. Tidak terkurung satu template.',
   },
   {
     icon: Lock,
-    title: '100% lokal, 0 login',
-    desc: 'Hasil disimpan di SQLite lokal kamu. API key hanya hidup di server, tidak pernah dikirim ke browser. Zero cloud lock-in.',
+    title: 'Data kamu, di mesin kamu',
+    desc: 'Semua hasil tersimpan lokal di server kamu sendiri. Tidak ada cloud pihak ketiga, tidak ada watermark, tidak ada yang bisa akses desain kamu kecuali kamu sendiri.',
   },
 ]
 
 const STEPS = [
   {
     n: '01',
-    title: 'Isi topik utama',
-    desc: 'Cukup satu baris: "Promo kopi susu diskon 30%". Nama brand, palette, audiens semuanya opsional.',
+    title: 'Ketik topik kamu',
+    desc: 'Cukup satu kalimat: "Tips skincare untuk pemula". Brand, palette, audiens — semuanya opsional, AI bisa decide sendiri.',
   },
   {
     n: '02',
-    title: 'AI menyusun brief',
-    desc: 'AI riset mood board, pilih art style, commit ke palette hex, dan menulis storyboard slide.',
+    title: 'AI riset & susun brief',
+    desc: 'Dalam 5 detik, AI commit ke palette hex, tipografi, art style, dan menulis storyboard lengkap untuk setiap slide.',
   },
   {
     n: '03',
-    title: 'Render per slide',
-    desc: 'Setiap slide dirender dengan brief yang sama agar palette dan layout konsisten antar slide.',
+    title: 'Render otomatis',
+    desc: 'Setiap slide dirender dengan brief yang sama — palette, layout, dan motif identik. Hasilnya konsisten tanpa kamu sentuh.',
   },
   {
     n: '04',
-    title: 'Preview & download',
-    desc: 'Preview ala Instagram langsung tampil. Download PNG per slide, upload, selesai.',
+    title: 'Download & posting',
+    desc: 'Download PNG per slide, upload ke Instagram, selesai. Dari ide ke postingan dalam waktu kurang dari 1 menit.',
   },
 ]
 
 const USE_CASES = [
   {
     icon: Store,
-    title: 'UMKM & retail',
-    desc: 'Promo mingguan, launching produk, info cabang baru. Konsisten dengan brand tanpa butuh desainer internal.',
-    examples: ['Promo diskon', 'Launching produk', 'Info cabang'],
+    title: 'UMKM & brand lokal',
+    desc: 'Promo mingguan, launching produk, info cabang baru — semua konsisten dengan brand kamu tanpa perlu hire desainer.',
+    examples: ['Promo diskon', 'Menu baru', 'Tips produk', 'Launching'],
   },
   {
     icon: Users,
-    title: 'Content creator',
-    desc: 'Carousel edukasi dan tips yang look-nya konsisten di feed. Fokus ke riset dan copy, desain biar AI yang urus.',
-    examples: ['Carousel tips', 'Breakdown tutorial', 'Rangkuman tren'],
+    title: 'Content creator & educator',
+    desc: 'Carousel edukasi yang look-nya premium dan konsisten di feed. Fokus riset konten, visual biar AI yang handle.',
+    examples: ['Carousel tips', 'Tutorial step-by-step', 'Rangkuman tren', 'Infografis'],
   },
   {
     icon: Rocket,
-    title: 'Agency & freelancer',
-    desc: 'Draft konsep visual lebih cepat, present ke klien dalam hitungan menit bukan hari. Iterasi tanpa biaya tambahan.',
-    examples: ['Presentasi klien', 'Moodboard cepat', 'Draft kampanye'],
+    title: 'Agency & social media manager',
+    desc: 'Draft visual untuk klien dalam hitungan menit, bukan hari. Iterasi tanpa biaya tambahan, present lebih cepat.',
+    examples: ['Pitch deck visual', 'Draft kampanye', 'Content calendar', 'A/B testing visual'],
   },
 ]
 
 const COMPARE = [
-  { feature: 'Waktu per carousel', manual: '2–4 jam', agency: '1–3 hari', us: '< 1 menit' },
-  { feature: 'Biaya per carousel', manual: 'Gratis tapi capek', agency: 'Rp 500K–3Jt', us: 'Gratis selamanya' },
-  { feature: 'Konsistensi antar slide', manual: 'Tergantung skill', agency: 'Bagus', us: 'Dijamin' },
-  { feature: 'Revisi', manual: 'Manual, lama', agency: 'Ping-pong email', us: 'Generate ulang, detik' },
-  { feature: 'Copy Bahasa Indonesia', manual: 'Tulis sendiri', agency: 'Brief dulu', us: 'Auto' },
-  { feature: 'Privasi', manual: 'Aman', agency: 'Share ke pihak ke-3', us: 'Lokal di mesin kamu' },
+  { feature: 'Waktu per carousel', manual: '2–4 jam', agency: '1–3 hari kerja', us: '< 1 menit' },
+  { feature: 'Biaya per carousel', manual: 'Gratis tapi capek', agency: 'Rp 500K–3Jt', us: 'Gratis (bayar AI saja)' },
+  { feature: 'Konsistensi antar slide', manual: 'Tergantung skill', agency: 'Bagus tapi lama', us: 'Otomatis dijamin' },
+  { feature: 'Revisi / iterasi', manual: 'Ulangi dari awal', agency: 'Email bolak-balik', us: '1 klik, 30 detik' },
+  { feature: 'Copy Bahasa Indonesia', manual: 'Tulis sendiri', agency: 'Brief dulu, tunggu', us: 'Auto, natural' },
+  { feature: 'Privasi data brand', manual: 'Aman di laptop', agency: 'Shared ke tim luar', us: 'Server kamu sendiri' },
 ]
 
 const FAQ = [
   {
     q: 'Apakah saya butuh skill desain atau pengalaman prompt AI?',
-    a: 'Tidak. Cukup tulis topik konten kamu. AI yang memutuskan palette, gaya, layout, dan bahkan copy. Kalau kamu punya preferensi brand palette, boleh diisi; tapi bukan keharusan.',
+    a: 'Sama sekali tidak. Cukup ketik topik konten kamu dalam 1 kalimat. AI yang memutuskan palette, gaya visual, layout, tipografi, dan bahkan menulis copy-nya. Kalau kamu punya preferensi warna brand, boleh diisi — tapi bukan keharusan.',
   },
   {
-    q: 'Apakah hasilnya benar-benar konsisten antar slide?',
-    a: 'Ya. Sebelum render slide pertama, AI commit ke satu design brief lengkap (palette hex eksak, tipografi, posisi elemen, motif). Brief itu dipakai verbatim di setiap slide, jadi slide 1 sampai 10 terasa satu seri.',
+    q: 'Hasilnya benar-benar konsisten antar slide? Bukan cuma mirip?',
+    a: 'Benar-benar konsisten. Sebelum render slide pertama, AI commit ke satu design brief lengkap — palette hex eksak, nama font, posisi logo, motif visual. Brief itu dipakai verbatim di setiap slide, jadi slide 1 sampai 10 terasa satu seri yang utuh.',
+  },
+  {
+    q: 'Berapa lama waktu generate 1 carousel?',
+    a: 'Rata-rata 30–60 detik untuk carousel 5 slide. Slide muncul satu per satu secara real-time, jadi kamu bisa lihat progress tanpa menunggu semua selesai.',
   },
   {
     q: 'Format dan ukuran apa saja yang didukung?',
-    a: 'Square 1:1 (1024×1024), Portrait 4:5 (1024×1280), dan Story 9:16 (1024×1792). Hasil disimpan dalam WebP terkompresi—ukuran file kecil, kualitas tetap tajam.',
+    a: 'Square 1:1 (1024×1024), Portrait 4:5 (1024×1280), dan Story 9:16 (1024×1792). Hasil disimpan dalam WebP terkompresi — ukuran file kecil, kualitas tetap tajam. Download dalam PNG juga tersedia.',
   },
   {
     q: 'Apakah data brand dan hasil desain saya aman?',
-    a: 'Sangat aman. Semua hasil disimpan di SQLite lokal di mesin kamu sendiri. API key hanya hidup di server lokal, tidak pernah sampai ke browser atau disimpan di cloud pihak ketiga.',
+    a: 'Sangat aman. Kamu perlu daftar akun (gratis) agar desain terasosiasi dengan akun kamu. Semua hasil tersimpan di server lokal — tidak ada cloud pihak ketiga yang menyimpan data kamu. API key hanya hidup di server, tidak pernah sampai ke browser.',
   },
   {
-    q: 'Berapa carousel yang bisa saya generate per hari?',
-    a: 'Tidak ada batasan dari sisi FeedDesigner. Batasnya hanya quota dari provider AI yang kamu pakai (OpenAI-compatible endpoint apapun).',
+    q: 'Berapa biayanya? Ada limit generate per hari?',
+    a: 'Daftar dan menggunakan FeedDesigner 100% gratis. Biaya hanya mengalir ke provider AI yang kamu pakai (OpenAI-compatible endpoint). Admin bisa mengatur limit harian jika diperlukan, tapi secara default tidak ada batasan dari sisi aplikasi.',
   },
   {
-    q: 'Bisa diintegrasikan dengan workflow Canva atau Figma?',
-    a: 'Export hasilnya PNG/WebP, jadi bisa langsung masuk ke Canva, Figma, Photoshop, atau tool desain lain untuk polish akhir—tanpa vendor lock-in.',
+    q: 'Bisa upload logo brand sendiri?',
+    a: 'Bisa. Upload logo kamu dan AI akan menggunakannya langsung di setiap slide — tanpa menggambar ulang atau mengubahnya. Posisi dan ukuran logo konsisten di semua slide.',
+  },
+  {
+    q: 'Bisa diintegrasikan dengan Canva, Figma, atau tool lain?',
+    a: 'Hasil export dalam PNG/WebP standar, jadi bisa langsung masuk ke Canva, Figma, Photoshop, atau tool desain apapun untuk polish akhir — tanpa vendor lock-in.',
   },
 ]
 
@@ -341,9 +351,12 @@ function ShowcaseModal({ item, onClose, onStart }) {
     setActive(0)
     setLoading(true)
     const ctl = new AbortController()
-    fetch(`/api/showcase/${item.generationId}`, { signal: ctl.signal })
+    fetch(`${API_BASE_URL}/api/showcase/${item.generationId}`, { signal: ctl.signal })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('load'))))
-      .then((d) => setDetail(d))
+      .then((d) => {
+        if (d?.slides) d.slides = d.slides.map((s) => ({ ...s, image: resolveApiUrl(s.image) }))
+        setDetail(d)
+      })
       .catch(() => setDetail(null))
       .finally(() => setLoading(false))
     return () => ctl.abort()
@@ -570,9 +583,9 @@ function ShowcaseSection({ onStart }) {
 
   useEffect(() => {
     const ctl = new AbortController()
-    fetch('/api/showcase?limit=30', { signal: ctl.signal })
+    fetch(`${API_BASE_URL}/api/showcase?limit=30`, { signal: ctl.signal })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('load'))))
-      .then((d) => setItems(Array.isArray(d.items) ? d.items : []))
+      .then((d) => setItems(Array.isArray(d.items) ? d.items.map((it) => ({ ...it, image: resolveApiUrl(it.image) })) : []))
       .catch((e) => {
         if (e.name !== 'AbortError') {
           setError(true)
@@ -775,6 +788,7 @@ function Landing({ onStart, onHoverStudio, onGoDashboard, onHoverDashboard }) {
             ))}
           </div>
           <div className="flex items-center gap-1.5 sm:gap-2">
+            <PwaInstallButton />
             <ThemeToggle size="sm" />
             <UserMenu compact />
             {isAuthed && (
@@ -816,12 +830,12 @@ function Landing({ onStart, onHoverStudio, onGoDashboard, onHoverDashboard }) {
           </a>
 
           <h1 className="text-balance text-[40px] font-semibold leading-[1.02] tracking-[-0.04em] text-slate-950 sm:text-5xl sm:tracking-[-0.055em] md:text-[76px] md:leading-[0.98] dark:text-slate-100">
-            Carousel Instagram,<br />
-            <span className="text-slate-400 dark:text-slate-600">didesain AI dalam detik.</span>
+            Carousel Instagram<br />
+            <span className="text-slate-400 dark:text-slate-600">dalam 30 detik, bukan 3 jam.</span>
           </h1>
 
           <p className="mx-auto mt-5 max-w-xl text-pretty text-[14.5px] leading-7 text-slate-600 sm:mt-6 sm:text-[17px] sm:leading-8 dark:text-slate-400">
-            Cukup satu topik. AI kami menyusun copy Bahasa Indonesia, memilih palette, dan merender seluruh carousel yang konsisten antar slide. Siap posting tanpa Canva, tanpa desainer.
+            Ketik topik → AI menyusun copy, memilih visual, dan merender carousel 10 slide yang konsisten. Siap posting tanpa Canva, tanpa desainer, tanpa revisi bolak-balik.
           </p>
 
           <div className="mt-7 flex flex-col items-center justify-center gap-3 sm:mt-8 sm:flex-row">
@@ -832,7 +846,7 @@ function Landing({ onStart, onHoverStudio, onGoDashboard, onHoverDashboard }) {
               className="group inline-flex w-full items-center justify-center gap-2 rounded-md bg-slate-950 px-5 py-3 text-sm font-medium text-white shadow-[0_1px_0_rgba(255,255,255,0.1)_inset,0_4px_12px_-4px_rgba(15,23,42,0.4)] transition hover:bg-slate-800 sm:w-auto dark:bg-white dark:text-slate-950 dark:shadow-[0_1px_0_rgba(0,0,0,0.2)_inset,0_4px_12px_-4px_rgba(0,0,0,0.6)] dark:hover:bg-slate-200"
             >
               <span className="sm:hidden">Mulai gratis</span>
-              <span className="hidden sm:inline">Mulai gratis — tidak perlu kartu kredit</span>
+              <span className="hidden sm:inline">Mulai gratis — daftar 10 detik</span>
               <ArrowRight size={15} className="transition group-hover:translate-x-0.5" />
             </button>
             <a href="#showcase" className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-slate-200 bg-white px-5 py-3 text-sm font-medium text-slate-800 transition hover:bg-slate-50 sm:w-auto dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800">
@@ -841,27 +855,27 @@ function Landing({ onStart, onHoverStudio, onGoDashboard, onHoverDashboard }) {
           </div>
 
           <div className="mt-5 flex flex-wrap items-center justify-center gap-x-4 gap-y-1.5 text-[11px] text-slate-500 sm:gap-x-5 sm:gap-y-2 sm:text-xs dark:text-slate-400">
-            <span className="flex items-center gap-1.5"><Check size={12} className="text-emerald-500" /> Tanpa login</span>
+            <span className="flex items-center gap-1.5"><Check size={12} className="text-emerald-500" /> Daftar gratis</span>
             <span className="flex items-center gap-1.5"><Check size={12} className="text-emerald-500" /> Data lokal</span>
-            <span className="flex items-center gap-1.5"><Check size={12} className="text-emerald-500" /> Unlimited generate</span>
+            <span className="flex items-center gap-1.5"><Check size={12} className="text-emerald-500" /> Tanpa watermark</span>
             <span className="hidden items-center gap-1.5 sm:flex"><Kbd>⌘</Kbd><Kbd>↵</Kbd> generate cepat</span>
           </div>
         </div>
 
         <div className="mx-auto mt-12 grid max-w-4xl grid-cols-2 gap-y-6 border-y border-slate-200 py-6 sm:mt-16 sm:gap-y-8 sm:py-8 md:grid-cols-4 dark:border-slate-800">
-          <StatPill value="< 1m" label="Per carousel" />
+          <StatPill value="30s" label="Per carousel" />
           <StatPill value="10" label="Slide max" />
-          <StatPill value="3" label="Aspect ratio" />
-          <StatPill value="Rp 0" label="Biaya per desain" />
+          <StatPill value="15" label="Bahasa" />
+          <StatPill value="Gratis" label="Daftar & pakai" />
         </div>
       </section>
 
       {/* PAIN vs PROMISE */}
-      <section className="relative z-10 mx-auto max-w-6xl px-4 pb-16 sm:px-5 sm:pb-24 lg:px-8">
+      <section aria-label="Kenapa FeedDesigner" className="relative z-10 mx-auto max-w-6xl px-4 pb-16 sm:px-5 sm:pb-24 lg:px-8">
         <div className="mb-12 text-center">
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Kenapa FeedDesigner</p>
           <h2 className="mt-3 text-[30px] font-semibold leading-[1.08] tracking-[-0.03em] sm:text-4xl text-slate-950 md:text-5xl dark:text-slate-100">
-            Buat carousel tidak harus bikin stres.
+            Berhenti buang waktu di Canva.
           </h2>
         </div>
 
@@ -905,17 +919,17 @@ function Landing({ onStart, onHoverStudio, onGoDashboard, onHoverDashboard }) {
       </section>
 
       {/* HOW IT WORKS */}
-      <section id="how" className="relative z-10 border-y border-slate-200 bg-slate-50/60 dark:border-slate-800 dark:bg-slate-900/40">
+      <section id="how" aria-label="Cara kerja" className="relative z-10 border-y border-slate-200 bg-slate-50/60 dark:border-slate-800 dark:bg-slate-900/40">
         <div className="mx-auto max-w-6xl px-4 py-16 sm:px-5 sm:py-24 lg:px-8">
           <div className="mb-12 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Cara kerja</p>
               <h2 className="mt-3 max-w-2xl text-[30px] font-semibold leading-[1.08] tracking-[-0.03em] sm:text-4xl text-slate-950 md:text-5xl dark:text-slate-100">
-                Empat langkah, dari topik ke postingan siap upload.
+                Dari ide ke postingan dalam 4 langkah.
               </h2>
             </div>
             <p className="max-w-md text-[15px] leading-7 text-slate-600 dark:text-slate-400">
-              Tidak perlu prompt engineering. Tidak perlu riset design inspiration berjam-jam. AI menangani bagian yang memusingkan.
+              Tidak perlu prompt engineering. Tidak perlu riset moodboard. Tidak perlu revisi manual. AI handle semuanya.
             </p>
           </div>
 
@@ -935,16 +949,16 @@ function Landing({ onStart, onHoverStudio, onGoDashboard, onHoverDashboard }) {
       </section>
 
       {/* FEATURES */}
-      <section id="features" className="relative z-10 mx-auto max-w-6xl px-4 py-16 sm:px-5 sm:py-24 lg:px-8">
+      <section id="features" aria-label="Fitur unggulan" className="relative z-10 mx-auto max-w-6xl px-4 py-16 sm:px-5 sm:py-24 lg:px-8">
         <div className="mb-12 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Fitur</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Fitur unggulan</p>
             <h2 className="mt-3 max-w-2xl text-[30px] font-semibold leading-[1.08] tracking-[-0.03em] sm:text-4xl text-slate-950 md:text-5xl dark:text-slate-100">
               Bukan sekadar AI image generator.
             </h2>
           </div>
           <p className="max-w-md text-[15px] leading-7 text-slate-600 dark:text-slate-400">
-            Dibuat khusus untuk kebutuhan carousel Instagram brand di Indonesia — bukan tool serba guna yang kurang dalam.
+            Dibangun dari nol untuk kebutuhan carousel Instagram brand Indonesia — bukan tool serba guna yang setengah-setengah.
           </p>
         </div>
 
@@ -957,7 +971,7 @@ function Landing({ onStart, onHoverStudio, onGoDashboard, onHoverDashboard }) {
       <ShowcaseSection onStart={onStart} />
 
       {/* USE CASES */}
-      <section id="use-cases" className="relative z-10 border-t border-slate-200 bg-slate-50/60 dark:border-slate-800 dark:bg-slate-900/40">
+      <section id="use-cases" aria-label="Cocok untuk siapa" className="relative z-10 border-t border-slate-200 bg-slate-50/60 dark:border-slate-800 dark:bg-slate-900/40">
         <div className="mx-auto max-w-6xl px-4 py-16 sm:px-5 sm:py-24 lg:px-8">
           <div className="mb-12 text-center">
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Cocok untuk siapa</p>
@@ -1051,13 +1065,13 @@ function Landing({ onStart, onHoverStudio, onGoDashboard, onHoverDashboard }) {
       <section className="relative z-10 mx-auto max-w-6xl px-4 pb-16 sm:px-5 sm:pb-24 lg:px-8">
         <div className="mx-auto max-w-3xl rounded-2xl border border-slate-200 bg-gradient-to-br from-white to-slate-50 p-6 text-center sm:p-8 md:p-12 dark:border-slate-800 dark:from-slate-900 dark:to-slate-950">
           <div className="mx-auto mb-4 inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-medium text-emerald-700 sm:text-xs dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-400">
-            <InfinityIcon size={12} /> Semua fitur, tanpa biaya per-desain
+            <InfinityIcon size={12} /> Gratis dipakai, bayar AI provider saja
           </div>
           <h2 className="text-[30px] font-semibold leading-[1.08] tracking-[-0.03em] sm:text-4xl text-slate-950 md:text-5xl dark:text-slate-100">
-            Sepuasnya. Gratis.
+            Daftar gratis. Generate sepuasnya.
           </h2>
           <p className="mx-auto mt-4 max-w-xl text-[14px] leading-7 text-slate-600 sm:mt-5 sm:text-[15px] dark:text-slate-400">
-            FeedDesigner berjalan di mesin kamu sendiri. Tidak ada paywall, tidak ada limit per hari, tidak ada watermark. Biaya hanya mengalir ke provider AI yang kamu pilih—itupun bisa pakai provider lokal termurah.
+            Tidak ada paywall, tidak ada watermark. FeedDesigner berjalan di server kamu sendiri — biaya hanya mengalir ke provider AI yang kamu pilih, dan itu pun bisa pakai yang termurah.
           </p>
           <div className="mt-6 flex flex-col justify-center gap-3 sm:mt-7 sm:flex-row">
             <button
@@ -1070,20 +1084,20 @@ function Landing({ onStart, onHoverStudio, onGoDashboard, onHoverDashboard }) {
             </button>
           </div>
           <div className="mt-6 flex flex-wrap items-center justify-center gap-x-4 gap-y-1.5 text-[11px] text-slate-500 sm:gap-x-5 sm:gap-y-2 dark:text-slate-400">
-            <span className="flex items-center gap-1"><Check size={11} className="text-emerald-500" /> Tanpa kartu kredit</span>
+            <span className="flex items-center gap-1"><Check size={11} className="text-emerald-500" /> Daftar gratis</span>
             <span className="flex items-center gap-1"><Check size={11} className="text-emerald-500" /> Tanpa watermark</span>
-            <span className="flex items-center gap-1"><Check size={11} className="text-emerald-500" /> Unlimited render</span>
+            <span className="flex items-center gap-1"><Check size={11} className="text-emerald-500" /> Generate sepuasnya</span>
             <span className="flex items-center gap-1"><Check size={11} className="text-emerald-500" /> Export WebP/PNG</span>
           </div>
         </div>
       </section>
 
       {/* FAQ */}
-      <section id="faq" className="relative z-10 border-t border-slate-200 bg-slate-50/60 dark:border-slate-800 dark:bg-slate-900/40">
+      <section id="faq" aria-label="Pertanyaan yang sering ditanyakan" className="relative z-10 border-t border-slate-200 bg-slate-50/60 dark:border-slate-800 dark:bg-slate-900/40">
         <div className="mx-auto max-w-4xl px-4 py-16 sm:px-5 sm:py-24 lg:px-8">
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">FAQ</p>
           <h2 className="mt-3 text-[30px] font-semibold leading-[1.08] tracking-[-0.03em] sm:text-4xl text-slate-950 md:text-5xl dark:text-slate-100">
-            Masih ragu? Baca dulu.
+            Pertanyaan yang sering ditanyakan.
           </h2>
 
           <div className="mt-8 divide-y divide-slate-200 overflow-hidden rounded-xl border border-slate-200 bg-white sm:mt-10 dark:divide-slate-800 dark:border-slate-800 dark:bg-slate-900">
@@ -1107,14 +1121,14 @@ function Landing({ onStart, onHoverStudio, onGoDashboard, onHoverDashboard }) {
         <div className="overflow-hidden rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-950 via-slate-900 to-slate-800 p-6 text-white sm:p-10 md:p-16">
           <div className="relative">
             <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-slate-400 sm:text-xs">
-              <TrendingUp size={13} /> <span className="truncate">Dibangun untuk brand yang posting tiap hari</span>
+              <TrendingUp size={13} /> <span className="truncate">Untuk brand yang serius soal konsistensi feed</span>
             </div>
             <h2 className="mt-4 max-w-2xl text-[30px] font-semibold leading-[1.08] tracking-[-0.03em] sm:text-4xl md:text-5xl">
-              Stop bikin carousel manual.<br />
-              <span className="text-slate-400">Mulai posting lebih sering.</span>
+              Kompetitor kamu posting tiap hari.<br />
+              <span className="text-slate-400">Kamu kapan?</span>
             </h2>
             <p className="mt-5 max-w-lg text-[14px] leading-7 text-slate-300 sm:text-[15px]">
-              Ratusan brand Indonesia sedang mencari cara posting konsisten tanpa buang waktu. FeedDesigner adalah jawabannya—dan benar-benar gratis di mesin kamu sendiri.
+              Dengan FeedDesigner, kamu bisa generate carousel berkualitas agency dalam 30 detik. Daftar gratis, langsung pakai. Tidak ada alasan lagi untuk jarang posting.
             </p>
             <div className="mt-7 flex flex-col gap-3 sm:mt-8 sm:flex-row">
               <button onClick={onStart} onMouseEnter={handleHover} onFocus={handleHover} className="group inline-flex items-center justify-center gap-2 rounded-md bg-white px-5 py-3 text-sm font-medium text-slate-950 transition hover:bg-slate-100">

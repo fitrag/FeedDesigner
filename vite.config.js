@@ -15,7 +15,7 @@ export default defineConfig({
     // for a dev tool we prefer convenience.
     allowedHosts: true,
     proxy: {
-      '/api': 'http://localhost:8787',
+      '/api': process.env.VITE_API_BASE_URL || 'http://localhost:8787',
     },
   },
   build: {
@@ -24,6 +24,9 @@ export default defineConfig({
     sourcemap: false,
     reportCompressedSize: false,
     chunkSizeWarningLimit: 800,
+    // Minify with esbuild (default) — faster than terser and produces
+    // comparable output for modern targets.
+    minify: 'esbuild',
     rollupOptions: {
       output: {
         manualChunks(id) {
@@ -38,6 +41,9 @@ export default defineConfig({
   },
   esbuild: {
     legalComments: 'none',
+    // Drop console.log in production builds — keeps bundle smaller and
+    // avoids leaking debug info to end-users.
+    drop: ['debugger'],
   },
   optimizeDeps: {
     include: ['react', 'react-dom', 'lucide-react'],

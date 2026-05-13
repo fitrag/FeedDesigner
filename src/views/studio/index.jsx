@@ -7,6 +7,7 @@ import { useToast } from '../toast.jsx'
 import { authedFetch, useAuth } from '../auth.jsx'
 import { useIsMobile } from './hooks.js'
 import { deriveStudioFileName } from './utils.js'
+import { resolveApiUrl } from '../../config.js'
 import { ShortcutsModal, CommandPalette } from './modals.jsx'
 import DesktopStudio from './DesktopStudio.jsx'
 import MobileStudio from './MobileStudio.jsx'
@@ -19,8 +20,8 @@ import MobileStudio from './MobileStudio.jsx'
  */
 function StudioView({ onBack }) {
   const {
-    form, images, activeSlide, prompt, loading, generatingSlide, error,
-    canGenerate, isCarousel, update, generate, setActiveSlide,
+    form, images, slideStatus, failedSlides, activeSlide, prompt, loading, generatingSlide, error,
+    canGenerate, isCarousel, update, generate, retrySlide, retryFailed, setActiveSlide,
     productUpload, referenceUploads, logoUpload,
     setProductUpload, setReferenceUploads, setLogoUpload, clearUploads,
   } = useStudioController()
@@ -46,6 +47,7 @@ function StudioView({ onBack }) {
   const setAudience = useCallback((v) => update('audience', v), [update])
   const setCaptionTone = useCallback((v) => update('captionTone', v), [update])
   const setExtraNotes = useCallback((v) => update('extraNotes', v), [update])
+  const setLanguage = useCallback((v) => update('language', v), [update])
 
   const reset = useCallback(() => {
     ['brandName', 'topic', 'colorPalette', 'extraNotes'].forEach((k) => update(k, ''))
@@ -97,7 +99,7 @@ function StudioView({ onBack }) {
         slideCount: it.slideCount,
         totalSlides: it.totalSlides,
         createdAt: it.createdAt,
-        cover: `/api/images/${it.id}-01.webp`,
+        cover: resolveApiUrl(`/api/images/${it.id}-01.webp`),
       })))
     } catch { /* offline ok */ }
   }, [isAuthed])
@@ -168,24 +170,36 @@ function StudioView({ onBack }) {
   /* ---------- generate lifecycle toasts ---------- */
   const prevLoadingRef = useRef(false)
   const prevErrorRef = useRef('')
-  const lastImageCountRef = useRef(0)
+  const prevFailedRef = useRef(0)
   useEffect(() => {
     if (error && error !== prevErrorRef.current) {
-      toast.error(error, { title: 'Generate gagal' })
+      // Prefer the explicit "some slides failed" message when we have one
+      // — it's more actionable than the raw upstream error.
+      if (failedSlides.length > 0 && isCarousel) {
+        toast.warning(
+          `${failedSlides.length} slide gagal. Ketuk tombol retry untuk mencoba ulang.`,
+          { title: 'Sebagian slide timeout' },
+        )
+      } else {
+        toast.error(error, { title: 'Generate gagal' })
+      }
     }
     prevErrorRef.current = error
-  }, [error, toast])
+  }, [error, failedSlides.length, isCarousel, toast])
   useEffect(() => {
     const wasLoading = prevLoadingRef.current
     prevLoadingRef.current = loading
-    if (wasLoading && !loading && images.length > lastImageCountRef.current && !error) {
+    const okCount = images.filter(Boolean).length
+    const failedCount = failedSlides.length
+    // Fire the success toast when generation finishes and every slot is OK.
+    if (wasLoading && !loading && okCount > 0 && failedCount === 0 && !error) {
       toast.success(
-        isCarousel ? `Carousel ${images.length} slide selesai dibuat` : 'Desain feed selesai dibuat',
+        isCarousel ? `Carousel ${okCount} slide selesai dibuat` : 'Desain feed selesai dibuat',
         { title: 'Selesai' },
       )
     }
-    lastImageCountRef.current = images.length
-  }, [loading, images.length, isCarousel, error, toast])
+    prevFailedRef.current = failedCount
+  }, [loading, images, failedSlides.length, isCarousel, error, toast])
 
   /* ---------- clipboard ---------- */
   const copyPrompt = useCallback(async () => {
@@ -234,16 +248,16 @@ function StudioView({ onBack }) {
 
   /* ---------- shared props shape ---------- */
   const sharedProps = {
-    form, images, activeSlide, prompt, loading, generatingSlide, error,
+    form, images, slideStatus, failedSlides, activeSlide, prompt, loading, generatingSlide, error,
     canGenerate, isCarousel, setActiveSlide,
-    generate, reset, copyPrompt, pickTemplate, prevSlide, nextSlide,
+    generate, retrySlide, retryFailed, reset, copyPrompt, pickTemplate, prevSlide, nextSlide,
     onBack, fileName,
     isAuthed, openLogin,
     history, refreshHistory, loadHistory, deleteHistory,
     productUpload, referenceUploads, logoUpload,
     setProductUpload, setReferenceUploads, setLogoUpload,
     setMode, setFormat, setTotalSlides, setBrandName, setTopic, setColorPalette,
-    setAudience, setCaptionTone, setExtraNotes,
+    setAudience, setCaptionTone, setExtraNotes, setLanguage,
   }
 
   return (

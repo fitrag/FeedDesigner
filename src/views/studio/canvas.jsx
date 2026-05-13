@@ -1,5 +1,5 @@
 import { memo, useMemo } from 'react'
-import { ChevronLeft, ChevronRight, Download, Loader2, Sparkles } from 'lucide-react'
+import { AlertTriangle, ChevronLeft, ChevronRight, Download, Loader2, RefreshCw, Sparkles } from 'lucide-react'
 import { Kbd } from '../common.jsx'
 import { useElapsedSeconds } from './hooks.js'
 import { formatMs, buildDownloadName, toPngDownloadUrl } from './utils.js'
@@ -89,15 +89,51 @@ const SkeletonLoader = memo(function SkeletonLoader({ current, total, label }) {
   )
 })
 
+/* =================== failed slide overlay =================== */
+
+const FailedSlideOverlay = memo(function FailedSlideOverlay({ index, onRetry }) {
+  return (
+    <div className="absolute inset-0 grid place-items-center bg-gradient-to-br from-rose-50 to-white dark:from-rose-950/30 dark:to-slate-900">
+      <div className="flex flex-col items-center gap-4 px-6 text-center">
+        <div className="grid h-14 w-14 place-items-center rounded-2xl bg-rose-100 text-rose-600 dark:bg-rose-950/50 dark:text-rose-400">
+          <AlertTriangle size={22} />
+        </div>
+        <div>
+          <p className="text-[14px] font-semibold text-slate-900 dark:text-slate-100">
+            Slide {index} gagal di-generate
+          </p>
+          <p className="mt-1 text-[12px] leading-5 text-slate-500 dark:text-slate-400">
+            Biasanya karena timeout dari provider AI. Coba generate ulang slide ini saja.
+          </p>
+        </div>
+        {onRetry && (
+          <button
+            type="button"
+            onClick={onRetry}
+            className="inline-flex items-center gap-1.5 rounded-md bg-slate-950 px-4 py-2 text-[13px] font-semibold text-white transition hover:bg-slate-800 dark:bg-white dark:text-slate-950 dark:hover:bg-slate-200"
+          >
+            <RefreshCw size={13} /> Coba ulang slide {index}
+          </button>
+        )}
+      </div>
+    </div>
+  )
+})
+
 /* =================== canvas =================== */
 
 export const Canvas = memo(function Canvas({
-  images, activeSlide, loading, isCarousel, generatingSlide, totalSlides, zoom, format,
-  onPickTemplate, onPrev, onNext,
+  images, slideStatus = [], activeSlide, loading, isCarousel, generatingSlide, totalSlides, zoom, format,
+  onPickTemplate, onPrev, onNext, onRetrySlide,
 }) {
   const current = images[activeSlide]
-  const showEmpty = !loading && !current
-  const showLoader = loading && !current
+  const activeStatus = slideStatus[activeSlide]
+  const isActiveFailed = activeStatus === 'failed'
+  // Only show the "blank canvas" empty state before any generate has been
+  // kicked off. Once we have slots (sparse images array with nulls), we're
+  // in the middle of a generation and should show per-slot status instead.
+  const showEmpty = !loading && !current && !isActiveFailed && images.length === 0
+  const showLoader = loading && !current && !isActiveFailed
 
   const aspectClass = useMemo(() => {
     if (format === 'portrait 4:5') return 'aspect-[4/5]'
@@ -133,6 +169,12 @@ export const Canvas = memo(function Canvas({
                   : 'Merender feed'}
               />
             </div>
+          )}
+          {isActiveFailed && !loading && (
+            <FailedSlideOverlay
+              index={activeSlide + 1}
+              onRetry={onRetrySlide ? () => onRetrySlide(activeSlide + 1) : null}
+            />
           )}
           {isCarousel && current && (
             <div className="absolute right-3 top-3 rounded-md bg-black/70 px-2 py-0.5 font-mono text-[10px] font-semibold text-white backdrop-blur">
@@ -171,12 +213,13 @@ export const Canvas = memo(function Canvas({
 /* =================== filmstrip =================== */
 
 export const Filmstrip = memo(function Filmstrip({
-  images, activeSlide, setActiveSlide, totalSlides, isCarousel, loading, generatingSlide,
-  topic, brand,
+  images, slideStatus = [], activeSlide, setActiveSlide, totalSlides, isCarousel, loading, generatingSlide,
+  topic, brand, onRetrySlide, failedSlides = [], onRetryAllFailed,
 }) {
   const elapsed = useElapsedSeconds(loading, generatingSlide)
   if (!isCarousel && images.length === 0) return null
   const slots = isCarousel ? Math.max(totalSlides, images.length) : images.length
+  const hasFailures = failedSlides.length > 0
 
   return (
     <div className="flex h-[92px] shrink-0 items-center gap-2 border-t border-slate-200 bg-white/60 px-4 py-3 backdrop-blur dark:border-slate-800 dark:bg-slate-950/60">
@@ -184,21 +227,34 @@ export const Filmstrip = memo(function Filmstrip({
       <div className="flex flex-1 items-center gap-2 overflow-x-auto">
         {Array.from({ length: slots }).map((_, index) => {
           const image = images[index]
+          const status = slideStatus[index]
           const active = index === activeSlide
-          const pending = !image && loading && index === images.length
+          const isFailed = status === 'failed'
+          const isPending = status === 'pending' && loading && generatingSlide === index + 1
           return (
             <button
               type="button"
               key={index}
-              onClick={() => image && setActiveSlide(index)}
-              disabled={!image}
+              onClick={() => {
+                if (isFailed && onRetrySlide) { onRetrySlide(index + 1); return }
+                if (image) setActiveSlide(index)
+              }}
+              disabled={!image && !isFailed}
+              title={isFailed ? `Slide ${index + 1} gagal — klik untuk retry` : `Slide ${index + 1}`}
               className={`group relative h-16 w-16 shrink-0 overflow-hidden rounded-md border transition ${
-                active ? 'border-slate-900 ring-2 ring-slate-900/20 dark:border-slate-100 dark:ring-slate-100/20' : image ? 'border-slate-200 hover:border-slate-400 dark:border-slate-700 dark:hover:border-slate-500' : 'border-dashed border-slate-300 bg-white dark:border-slate-700 dark:bg-slate-900'
+                isFailed ? 'border-rose-400 bg-rose-50 ring-2 ring-rose-300/50 hover:bg-rose-100 dark:border-rose-900/60 dark:bg-rose-950/30 dark:ring-rose-900/40 dark:hover:bg-rose-950/50'
+                  : active ? 'border-slate-900 ring-2 ring-slate-900/20 dark:border-slate-100 dark:ring-slate-100/20'
+                  : image ? 'border-slate-200 hover:border-slate-400 dark:border-slate-700 dark:hover:border-slate-500'
+                  : 'border-dashed border-slate-300 bg-white dark:border-slate-700 dark:bg-slate-900'
               } disabled:cursor-not-allowed`}
             >
               {image ? (
                 <img src={image} alt={`Slide ${index + 1}`} loading="lazy" decoding="async" className="h-full w-full object-cover" />
-              ) : pending ? (
+              ) : isFailed ? (
+                <div className="grid h-full w-full place-items-center">
+                  <RefreshCw size={14} className="text-rose-600 dark:text-rose-400" />
+                </div>
+              ) : isPending ? (
                 <div className="grid h-full w-full place-items-center">
                   <div className="flex flex-col items-center gap-0.5">
                     <Loader2 size={12} className="animate-spin text-slate-500 dark:text-slate-400" />
@@ -210,12 +266,23 @@ export const Filmstrip = memo(function Filmstrip({
                   <span className="font-mono text-[10px] text-slate-400 dark:text-slate-500">{index + 1}</span>
                 </div>
               )}
-              <span className="absolute bottom-0.5 right-0.5 rounded bg-black/70 px-1 font-mono text-[9px] font-bold text-white">{index + 1}</span>
+              <span className={`absolute bottom-0.5 right-0.5 rounded px-1 font-mono text-[9px] font-bold text-white ${
+                isFailed ? 'bg-rose-600' : 'bg-black/70'
+              }`}>{index + 1}</span>
             </button>
           )
         })}
       </div>
-      {images.length > 0 && (
+      {hasFailures && !loading && onRetryAllFailed && (
+        <button
+          type="button"
+          onClick={onRetryAllFailed}
+          className="ml-2 inline-flex shrink-0 items-center gap-1.5 rounded-md bg-rose-600 px-3 py-2 text-[12px] font-semibold text-white transition hover:bg-rose-700"
+        >
+          <RefreshCw size={13} /> Retry {failedSlides.length}
+        </button>
+      )}
+      {images.filter(Boolean).length > 0 && images[activeSlide] && (
         <a
           href={toPngDownloadUrl(images[activeSlide])}
           download={buildDownloadName({

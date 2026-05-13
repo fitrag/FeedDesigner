@@ -1,6 +1,7 @@
 import { memo } from 'react'
 import { ChevronRight, Layers, Sparkles, Square } from 'lucide-react'
 import { formatRelative } from '../studio/utils.js'
+import { resolveApiUrl } from '../../config.js'
 import {
   EmptyState, GenerationCard, GridSkeleton, HeroPanel, StatCard, STAT_ICONS,
   formatAbs, formatBytes,
@@ -178,7 +179,7 @@ const SectionHeader = memo(function SectionHeader({ label }) {
 
 const MobileRecentRow = memo(function MobileRecentRow({ item, onOpen }) {
   const isCarousel = item.mode === 'carousel'
-  const cover = `/api/images/${item.id}-01.webp`
+  const cover = resolveApiUrl(`/api/images/${item.id}-01.webp`)
   return (
     <button
       type="button"

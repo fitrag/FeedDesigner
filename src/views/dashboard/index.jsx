@@ -5,28 +5,12 @@ import { ThemeToggle } from '../theme.jsx'
 import { authedFetch, UserMenu, useAuth } from '../auth.jsx'
 import { useToast } from '../toast.jsx'
 import { Sidebar } from './shared.jsx'
+import { useIsMobile } from '../studio/hooks.js'
 import DashboardPage from './DashboardPage.jsx'
 import DesignsPage from './DesignsPage.jsx'
 import MobileShell, { MobileAccountPage } from './MobileShell.jsx'
 
 const GenerationDetailModal = lazy(() => import('./DetailModal.jsx'))
-
-/** Match a CSS media query and track changes. Returns true on server-side so
- * the desktop layout is the SSR default — that way the mobile shell only
- * renders when we know the viewport is actually small. */
-function useMediaQuery(query) {
-  const [matches, setMatches] = useState(() => {
-    if (typeof window === 'undefined') return false
-    return window.matchMedia(query).matches
-  })
-  useEffect(() => {
-    const mq = window.matchMedia(query)
-    const onChange = (e) => setMatches(e.matches)
-    mq.addEventListener('change', onChange)
-    return () => mq.removeEventListener('change', onChange)
-  }, [query])
-  return matches
-}
 
 /**
  * Dashboard orchestrator.
@@ -48,7 +32,7 @@ function DashboardView({
 }) {
   const { isAuthed, status, openLogin, user } = useAuth()
   const toast = useToast()
-  const isMobile = useMediaQuery('(max-width: 1023px)')
+  const isMobile = useIsMobile()
 
   const [items, setItems] = useState(null)
   const [stats, setStats] = useState(null)

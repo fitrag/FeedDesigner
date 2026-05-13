@@ -1,5 +1,7 @@
 import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
-import { AtSign, Eye, EyeOff, LayoutDashboard, LogIn, LogOut, Lock, User, UserPlus, X } from 'lucide-react'
+import { AtSign, Eye, EyeOff, LayoutDashboard, LogIn, LogOut, Lock, Shield, User, UserPlus, X } from 'lucide-react'
+import { useSettings } from './settings.jsx'
+import { API_BASE_URL } from '../config.js'
 
 /* ---------- auth client state ----------
  *
@@ -45,19 +47,41 @@ function takeLegacyToken() {
 
 /**
  * fetch() wrapper that:
+ * - prepends API_BASE_URL so the app works with a remote API server
  * - always includes credentials so the httpOnly auth cookie is sent
  * - attaches the CSRF header on state-changing requests when we have one
- * - falls back to a legacy Authorization bearer on first boot
+ * - auto-recovers from a stale CSRF: on 403 "CSRF token tidak valid", it
+ *   refreshes the token via /api/auth/me and retries the original request
+ *   once. This absorbs the race where a cookie was rotated mid-flight.
  */
 export async function authedFetch(url, init = {}) {
-  const headers = new Headers(init.headers || {})
+  const fullUrl = url.startsWith('http') ? url : `${API_BASE_URL}${url}`
   const method = (init.method || 'GET').toUpperCase()
   const isStateChanging = method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS'
-  // Prefer the value the server just set in its readable cookie; fall back
-  // to the one returned in the login response (cached in memory).
-  const csrf = readCsrfCookie() || currentCsrf
-  if (isStateChanging && csrf) headers.set('X-CSRF-Token', csrf)
-  return fetch(url, { ...init, credentials: 'include', headers })
+
+  const doFetch = async () => {
+    const headers = new Headers(init.headers || {})
+    const csrf = readCsrfCookie() || currentCsrf
+    if (isStateChanging && csrf) headers.set('X-CSRF-Token', csrf)
+    return fetch(fullUrl, { ...init, credentials: 'include', headers })
+  }
+
+  let res = await doFetch()
+
+  // Auto-recover from CSRF mismatch. Only retry once, only for state-changing
+  // requests, only on 403 — avoid loops and stale-auth confusion.
+  if (res.status === 403 && isStateChanging) {
+    try {
+      const meRes = await fetch(`${API_BASE_URL}/api/auth/me`, { credentials: 'include' })
+      if (meRes.ok) {
+        const data = await meRes.json().catch(() => ({}))
+        if (data?.csrf) setCurrentCsrf(data.csrf)
+        res = await doFetch()
+      }
+    } catch { /* ignore, original 403 will be returned */ }
+  }
+
+  return res
 }
 
 /* ---------- context ---------- */
@@ -83,7 +107,7 @@ export function AuthProvider({ children }) {
       : {}
 
     setStatus('loading')
-    fetch('/api/auth/me', { credentials: 'include', ...init })
+    fetch(`${API_BASE_URL}/api/auth/me`, { credentials: 'include', ...init })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('unauth'))))
       .then((d) => {
         if (aborted) return
@@ -101,7 +125,7 @@ export function AuthProvider({ children }) {
   }, [])
 
   const login = useCallback(async ({ email, password }) => {
-    const res = await fetch('/api/auth/login', {
+    const res = await fetch(`${API_BASE_URL}/api/auth/login`, {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
@@ -116,7 +140,7 @@ export function AuthProvider({ children }) {
   }, [])
 
   const register = useCallback(async ({ email, password, name }) => {
-    const res = await fetch('/api/auth/register', {
+    const res = await fetch(`${API_BASE_URL}/api/auth/register`, {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
@@ -174,6 +198,8 @@ export function useAuth() {
 
 function AuthDialog() {
   const { dialog, closeDialog, login, register, openLogin, openRegister } = useAuth()
+  const { settings } = useSettings()
+  const registrationEnabled = settings.registrationEnabled !== false
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [name, setName] = useState('')
@@ -336,12 +362,14 @@ function AuthDialog() {
                   Masuk
                 </button>
               </>
-            ) : (
+            ) : registrationEnabled ? (
               <>Belum punya akun?{' '}
                 <button type="button" onClick={openRegister} className="font-medium text-slate-900 underline-offset-2 hover:underline dark:text-slate-100">
                   Daftar gratis
                 </button>
               </>
+            ) : (
+              <span className="italic text-slate-400 dark:text-slate-500">Pendaftaran sedang ditutup.</span>
             )}
           </p>
         </form>
@@ -354,6 +382,8 @@ function AuthDialog() {
 
 export const UserMenu = memo(function UserMenu({ compact = false }) {
   const { user, isAuthed, openLogin, openRegister, logout, status } = useAuth()
+  const { settings } = useSettings()
+  const registrationEnabled = settings.registrationEnabled !== false
   const [open, setOpen] = useState(false)
   const menuRef = useRef(null)
 
@@ -378,7 +408,7 @@ export const UserMenu = memo(function UserMenu({ compact = false }) {
         >
           <LogIn size={12} /> Masuk
         </button>
-        {!compact && (
+        {!compact && registrationEnabled && (
           <button
             type="button"
             onClick={openRegister}
@@ -425,6 +455,20 @@ export const UserMenu = memo(function UserMenu({ compact = false }) {
           >
             <LayoutDashboard size={12} /> Dashboard
           </a>
+          {user?.role === 'admin' && (
+            <a
+              href="/admin"
+              onClick={(e) => {
+                e.preventDefault()
+                setOpen(false)
+                window.history.pushState({}, '', '/admin')
+                window.dispatchEvent(new PopStateEvent('popstate'))
+              }}
+              className="flex w-full items-center gap-2 border-t border-slate-100 px-3 py-2 text-left text-[12.5px] font-medium text-rose-700 transition hover:bg-rose-50 dark:border-slate-800 dark:text-rose-400 dark:hover:bg-rose-950/40"
+            >
+              <Shield size={12} /> Admin dashboard
+            </a>
+          )}
           <button
             type="button"
             onClick={() => { setOpen(false); logout() }}

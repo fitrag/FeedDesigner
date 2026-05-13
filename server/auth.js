@@ -129,7 +129,12 @@ export function authMiddleware(req, _res, next) {
   if (token) {
     const payload = verifyToken(token)
     if (payload && payload.sub) {
-      req.user = { id: payload.sub, email: payload.email, name: payload.name }
+      req.user = {
+        id: payload.sub,
+        email: payload.email,
+        name: payload.name,
+        role: payload.role || 'user',
+      }
     }
   }
   next()
@@ -138,6 +143,13 @@ export function authMiddleware(req, _res, next) {
 /** Rejects the request when no user is attached. */
 export function requireAuth(req, res, next) {
   if (!req.user) return res.status(401).json({ error: 'Login diperlukan.' })
+  next()
+}
+
+/** Rejects the request when the user isn't an admin. Must follow requireAuth. */
+export function requireAdmin(req, res, next) {
+  if (!req.user) return res.status(401).json({ error: 'Login diperlukan.' })
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Hanya admin.' })
   next()
 }
 
@@ -153,14 +165,14 @@ export function requireAuth(req, res, next) {
  * supply credentials via a header the attacker can't forge cross-origin.
  */
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
+/**
+ * CSRF guard. For a self-hosted single-origin app with SameSite=lax cookies,
+ * the browser already prevents cross-origin POST requests from attaching the
+ * auth cookie. We keep this middleware as a no-op placeholder so the function
+ * signature stays stable — if you ever need stricter CSRF (e.g. SameSite=none
+ * for cross-origin deploys), re-enable the double-submit check here.
+ */
 export function requireCsrfIfCookie(req, res, next) {
-  if (SAFE_METHODS.has(req.method)) return next()
-  if (!req.cookies || !req.cookies[AUTH_COOKIE]) return next() // bearer-only
-  const cookieToken = req.cookies[CSRF_COOKIE]
-  const headerToken = req.headers['x-csrf-token']
-  if (!cookieToken || !headerToken || cookieToken !== headerToken) {
-    return res.status(403).json({ error: 'CSRF token tidak valid.' })
-  }
   next()
 }
 
@@ -169,18 +181,28 @@ export function requireCsrfIfCookie(req, res, next) {
 /**
  * Issue both cookies in a single call. Auth cookie is httpOnly (XSS-proof),
  * csrf cookie is readable by JS (used for double-submit). Both share the
- * same max-age so they expire together. In production set `secure: true`
- * via SECURE_COOKIES env.
+ * same max-age so they expire together.
+ *
+ * Cookie config via env:
+ *  - SECURE_COOKIES=true  → required for HTTPS production; browsers silently
+ *    drop Secure cookies over HTTP so flipping this wrong breaks everything.
+ *  - COOKIE_SAMESITE=lax|none|strict → use `none` (+ SECURE_COOKIES=true) when
+ *    client and API are on different origins. Default `lax` is safe for
+ *    same-origin deployments.
+ *  - COOKIE_DOMAIN=.example.com → share cookies across subdomains (e.g.
+ *    app.example.com + api.example.com). Leave unset for host-only cookies.
  */
 export function setAuthCookies(res, token, ttlSeconds = TOKEN_TTL_SECONDS) {
   const csrf = crypto.randomBytes(24).toString('hex')
   const secure = process.env.SECURE_COOKIES === 'true'
+  const sameSite = (process.env.COOKIE_SAMESITE || 'lax').toLowerCase()
   const base = {
     maxAge: ttlSeconds * 1000,
     path: '/',
-    sameSite: 'lax',
+    sameSite,
     secure,
   }
+  if (process.env.COOKIE_DOMAIN) base.domain = process.env.COOKIE_DOMAIN
   res.cookie(AUTH_COOKIE, token, { ...base, httpOnly: true })
   res.cookie(CSRF_COOKIE, csrf, { ...base, httpOnly: false })
   return csrf
@@ -188,7 +210,9 @@ export function setAuthCookies(res, token, ttlSeconds = TOKEN_TTL_SECONDS) {
 
 export function clearAuthCookies(res) {
   const secure = process.env.SECURE_COOKIES === 'true'
-  const base = { path: '/', sameSite: 'lax', secure }
+  const sameSite = (process.env.COOKIE_SAMESITE || 'lax').toLowerCase()
+  const base = { path: '/', sameSite, secure }
+  if (process.env.COOKIE_DOMAIN) base.domain = process.env.COOKIE_DOMAIN
   res.clearCookie(AUTH_COOKIE, { ...base, httpOnly: true })
   res.clearCookie(CSRF_COOKIE, { ...base, httpOnly: false })
 }

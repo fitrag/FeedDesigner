@@ -157,3 +157,9 @@ html.dark *::-webkit-scrollbar-thumb:active {
     animation: none !important;
   }
 }
+
+/* PWA install banner entrance animation. */
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(20px) scale(0.96); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}

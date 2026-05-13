@@ -10,6 +10,11 @@ const ROUTES = {
   studio: '/studio',
   dashboard: '/dashboard',
   'dashboard-designs': '/dashboard/designs',
+  admin: '/admin',
+  'admin-users': '/admin/users',
+  'admin-designs': '/admin/designs',
+  'admin-audit': '/admin/audit',
+  'admin-settings': '/admin/settings',
 }
 
 function getRouteFromLocation() {
@@ -18,6 +23,11 @@ function getRouteFromLocation() {
   if (path === ROUTES.studio) return 'studio'
   if (path === ROUTES['dashboard-designs']) return 'dashboard-designs'
   if (path === ROUTES.dashboard || path.startsWith(`${ROUTES.dashboard}/`)) return 'dashboard'
+  if (path === ROUTES['admin-users']) return 'admin-users'
+  if (path === ROUTES['admin-designs']) return 'admin-designs'
+  if (path === ROUTES['admin-audit']) return 'admin-audit'
+  if (path === ROUTES['admin-settings']) return 'admin-settings'
+  if (path === ROUTES.admin || path.startsWith(`${ROUTES.admin}/`)) return 'admin'
   return 'landing'
 }
 
@@ -36,26 +46,46 @@ export function useRouterController() {
       window.history.pushState({}, '', path)
     }
     setRoute(nextRoute)
-    window.scrollTo({ top: 0, behavior: 'smooth' })
+    // Instant scroll — smooth scrolling adds perceived latency on nav.
+    window.scrollTo(0, 0)
   }, [])
 
   const goLanding = useCallback(() => navigate('landing'), [navigate])
   const goStudio = useCallback(() => navigate('studio'), [navigate])
   const goDashboard = useCallback(() => navigate('dashboard'), [navigate])
   const goDashboardDesigns = useCallback(() => navigate('dashboard-designs'), [navigate])
+  const goAdmin = useCallback(() => navigate('admin'), [navigate])
+  const goAdminUsers = useCallback(() => navigate('admin-users'), [navigate])
+  const goAdminDesigns = useCallback(() => navigate('admin-designs'), [navigate])
+  const goAdminAudit = useCallback(() => navigate('admin-audit'), [navigate])
+  const goAdminSettings = useCallback(() => navigate('admin-settings'), [navigate])
 
-  // True whenever any dashboard page is active — useful for AppView routing.
   const isDashboard = useMemo(
     () => route === 'dashboard' || route === 'dashboard-designs',
+    [route],
+  )
+
+  const isAdmin = useMemo(
+    () => route === 'admin'
+      || route === 'admin-users'
+      || route === 'admin-designs'
+      || route === 'admin-audit'
+      || route === 'admin-settings',
     [route],
   )
 
   return {
     route,
     isDashboard,
+    isAdmin,
     goLanding,
     goStudio,
     goDashboard,
     goDashboardDesigns,
+    goAdmin,
+    goAdminUsers,
+    goAdminDesigns,
+    goAdminAudit,
+    goAdminSettings,
   }
 }

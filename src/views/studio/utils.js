@@ -85,6 +85,8 @@ export function deriveStudioFileName(topic, isCarousel) {
   return `${safe}.${isCarousel ? 'carousel' : 'feed'}`
 }
 
+import { API_BASE_URL, resolveApiUrl } from '../../config.js'
+
 /**
  * Convert a stored-WebP URL into the on-demand PNG export URL served by the
  * backend. Pass-through for data URLs or external URLs so downloads still
@@ -93,8 +95,13 @@ export function deriveStudioFileName(topic, isCarousel) {
 export function toPngDownloadUrl(imageUrl) {
   if (typeof imageUrl !== 'string' || !imageUrl) return imageUrl
   if (imageUrl.startsWith('data:')) return imageUrl
-  if (imageUrl.startsWith('/api/images/') && imageUrl.endsWith('.webp')) {
-    return `${imageUrl}.png`
+  // Strip any existing API base so we can match the stored path, then
+  // append .png + re-resolve against the current base.
+  const stripped = API_BASE_URL && imageUrl.startsWith(API_BASE_URL)
+    ? imageUrl.slice(API_BASE_URL.length)
+    : imageUrl
+  if (stripped.startsWith('/api/images/') && stripped.endsWith('.webp')) {
+    return resolveApiUrl(`${stripped}.png`)
   }
   return imageUrl
 }

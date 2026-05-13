@@ -2,6 +2,7 @@ import { memo, useCallback, useRef, useState } from 'react'
 import { ImagePlus, Loader2, Upload, X } from 'lucide-react'
 import { authedFetch } from '../auth.jsx'
 import { useToast } from '../toast.jsx'
+import { useSettings } from '../settings.jsx'
 
 const ACCEPTED = 'image/png,image/jpeg,image/webp,image/gif'
 const MAX_BYTES = 10 * 1024 * 1024 // 10 MB
@@ -24,7 +25,12 @@ async function uploadFile(file, kind) {
   })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) throw new Error(data?.error || 'Gagal upload')
-  return data // { id, url, width, height, ... }
+  // Server returns the compressed WebP as a data URL. Attach a client-side
+  // UUID so React can key it in lists without relying on a server id.
+  const id = typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `u-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  return { id, ...data }
 }
 
 /**
@@ -36,9 +42,11 @@ export function ImageUploader({ label, hint, kind, value, onChange, multiple = f
   const [busy, setBusy] = useState(false)
   const [dragOver, setDragOver] = useState(false)
   const toast = useToast()
+  const { settings } = useSettings()
+  const uploadsEnabled = settings.uploadsEnabled !== false
 
   const current = multiple ? (value || []) : (value ? [value] : [])
-  const canAddMore = multiple ? current.length < max : current.length === 0
+  const canAddMore = uploadsEnabled && (multiple ? current.length < max : current.length === 0)
 
   const handleFiles = useCallback(async (fileList) => {
     const files = Array.from(fileList || []).filter(Boolean)
@@ -83,10 +91,9 @@ export function ImageUploader({ label, hint, kind, value, onChange, multiple = f
     handleFiles(e.dataTransfer?.files)
   }, [handleFiles])
 
-  const remove = useCallback(async (rec) => {
-    try {
-      await authedFetch(`/api/uploads/${rec.id}`, { method: 'DELETE' })
-    } catch { /* best effort */ }
+  const remove = useCallback((rec) => {
+    // Uploads aren't persisted server-side anymore, so removing is purely
+    // local — just drop the record from state and let GC reclaim the bytes.
     if (multiple) {
       onChange((value || []).filter((x) => x.id !== rec.id))
     } else {
@@ -138,6 +145,11 @@ export function ImageUploader({ label, hint, kind, value, onChange, multiple = f
           {hint && <span className="text-[10.5px] font-normal text-slate-500 dark:text-slate-500">{hint}</span>}
         </button>
       )}
+      {!uploadsEnabled && current.length === 0 && (
+        <div className="rounded-md border border-dashed border-slate-300 bg-slate-50 px-3 py-4 text-center text-[11.5px] text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400">
+          Upload gambar sedang dinonaktifkan oleh admin.
+        </div>
+      )}
     </div>
   )
 }
@@ -145,7 +157,7 @@ export function ImageUploader({ label, hint, kind, value, onChange, multiple = f
 const Thumb = memo(function Thumb({ rec, onRemove, featured }) {
   return (
     <div className={`group relative overflow-hidden rounded-md border border-slate-200 bg-slate-100 dark:border-slate-700 dark:bg-slate-800 ${featured ? 'aspect-[4/3]' : 'aspect-square'}`}>
-      <img src={rec.url} alt="" loading="lazy" className="h-full w-full object-cover" />
+      <img src={rec.dataUrl} alt="" loading="lazy" className="h-full w-full object-cover" />
       <button
         type="button"
         onClick={onRemove}
