@@ -1312,6 +1312,40 @@ app.delete('/api/admin/generations/:id', requireAuth, requireAdmin, (req, res) =
   res.json({ ok: true })
 })
 
+/** Admin: get full detail of any generation (regardless of owner). */
+app.get('/api/admin/generations/:id', requireAuth, requireAdmin, (req, res) => {
+  const record = getGeneration(req.params.id)
+  if (!record) return res.status(404).json({ error: 'Generation tidak ditemukan.' })
+  const { generation, slides } = record
+  res.json({
+    id: generation.id,
+    createdAt: generation.created_at,
+    mode: generation.mode,
+    topic: generation.topic,
+    brandName: generation.brand_name,
+    audience: generation.audience,
+    palette: generation.palette,
+    format: generation.format,
+    tone: generation.tone,
+    extraNotes: generation.extra_notes,
+    totalSlides: generation.total_slides,
+    isPublic: Boolean(generation.is_public),
+    userId: generation.user_id,
+    slides: slides.map((s) => ({
+      id: s.id,
+      slideIndex: s.slide_index,
+      image: `/api/images/${s.file_name}`,
+      width: s.width,
+      height: s.height,
+      bytesOriginal: s.bytes_original,
+      bytesStored: s.bytes_stored,
+      role: s.role,
+      headline: s.headline,
+      createdAt: s.created_at,
+    })),
+  })
+})
+
 /** Platform-wide auth audit log for incident investigation. */
 app.get('/api/admin/auth-events', requireAuth, requireAdmin, (req, res) => {
   const limit = Number(req.query.limit) || 100
@@ -1436,11 +1470,14 @@ const DIST_INDEX = _nodePath.join(DIST_DIR, 'index.html')
 const HAS_DIST = _nodeFs.existsSync(DIST_INDEX)
 
 if (!HAS_DIST) {
-  console.warn(`[WARN] dist/index.html not found at: ${DIST_INDEX}`)
-  console.warn(`       __server_dirname = ${__server_dirname}`)
-  console.warn(`       cwd = ${process.cwd()}`)
-  console.warn('       Run "npm run build" in the project root to generate the production bundle.')
-  // Try cwd-based fallback (in case server is started from project root)
+  // Only warn if this looks like a same-origin setup (no VITE_API_BASE_URL).
+  // In cross-origin deploys the dist/ lives on a separate static host.
+  if (!process.env.VITE_API_BASE_URL) {
+    console.warn(`[WARN] dist/index.html not found at: ${DIST_INDEX}`)
+    console.warn(`       __server_dirname = ${__server_dirname}`)
+    console.warn(`       cwd = ${process.cwd()}`)
+    console.warn('       Run "npm run build" in the project root to generate the production bundle.')
+  }
   const cwdDist = _nodePath.resolve(process.cwd(), 'dist', 'index.html')
   if (_nodeFs.existsSync(cwdDist)) {
     console.log(`[INFO] Found dist at cwd: ${cwdDist}`)

@@ -1,9 +1,11 @@
-import { memo, useCallback, useEffect, useState } from 'react'
+import { lazy, memo, Suspense, useCallback, useEffect, useState } from 'react'
 import { Globe, Images, Layers, Loader2, Lock, Square, Trash2 } from 'lucide-react'
 import { authedFetch } from '../auth.jsx'
 import { useToast } from '../toast.jsx'
 import { EmptyHint, PageHeader, formatAbs, formatBytes } from './shared.jsx'
 import { resolveApiUrl } from '../../config.js'
+
+const AdminDetailModal = lazy(() => import('./DetailModal.jsx'))
 
 /**
  * Admin designs page — every generation on the platform. Lets admin remove
@@ -14,6 +16,7 @@ function DesignsPage() {
   const [items, setItems] = useState(null)
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState(null)
+  const [openId, setOpenId] = useState(null)
   const toast = useToast()
 
   const load = useCallback(async () => {
@@ -66,6 +69,7 @@ function DesignsPage() {
             const cover = resolveApiUrl(`/api/images/${g.id}-01.webp`)
             return (
               <article key={g.id} className="group relative flex flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white transition hover:-translate-y-0.5 hover:border-slate-300 dark:border-slate-800 dark:bg-slate-900 dark:hover:border-slate-700">
+                <button type="button" onClick={() => setOpenId(g.id)} className="block text-left">
                 <div className="relative aspect-square overflow-hidden bg-slate-100 dark:bg-slate-800">
                   <img
                     src={cover}
@@ -86,6 +90,7 @@ function DesignsPage() {
                     </span>
                   </div>
                 </div>
+                </button>
                 <div className="flex flex-col gap-1.5 p-3">
                   {g.brandName && (
                     <p className="truncate text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">
@@ -116,6 +121,19 @@ function DesignsPage() {
             )
           })}
         </div>
+      )}
+
+      {openId && (
+        <Suspense fallback={null}>
+          <AdminDetailModal
+            id={openId}
+            onClose={() => setOpenId(null)}
+            onDeleted={(deletedId) => {
+              setItems((xs) => (xs || []).filter((x) => x.id !== deletedId))
+              setOpenId(null)
+            }}
+          />
+        </Suspense>
       )}
     </>
   )
